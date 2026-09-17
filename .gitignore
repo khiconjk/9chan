@@ -137,3 +137,11 @@ all.config
 
 # fetched Android config fragments
 kernel/configs/android-*.cfg
+
+# S9 Ghost Kernel specific ignores
+*.log
+*.zip
+*.img
+*.rej
+AnyKernel3/zImage
+AnyKernel3/dtb.img

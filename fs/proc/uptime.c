@@ -5,6 +5,7 @@
 #include <linux/seq_file.h>
 #include <linux/time.h>
 #include <linux/kernel_stat.h>
+#include <linux/ghost_uptime.h>
 
 static int uptime_proc_show(struct seq_file *m, void *v)
 {
@@ -13,12 +14,23 @@ static int uptime_proc_show(struct seq_file *m, void *v)
 	u64 nsec;
 	u32 rem;
 	int i;
+	int cpus = 0;
 
 	nsec = 0;
-	for_each_possible_cpu(i)
+	for_each_possible_cpu(i) {
 		nsec += (__force u64) kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
+		cpus++;
+	}
 
 	get_monotonic_boottime(&uptime);
+
+	/* Add realistic ghost idle time: ~88.5% of ghost uptime offset across all CPUs */
+	if (s9_ghost_uptime_offset_sec > 0 && cpus > 0) {
+		u64 ghost_base_ns = s9_ghost_uptime_offset_sec * NSEC_PER_SEC;
+		u64 ghost_idle_nsec = ((ghost_base_ns / 1000ULL) * 885ULL) * (u64)cpus;
+		nsec += ghost_idle_nsec;
+	}
+
 	idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
 	idle.tv_nsec = rem;
 	seq_printf(m, "%lu.%02lu %lu.%02lu\n",

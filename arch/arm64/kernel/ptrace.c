@@ -591,8 +591,9 @@ static int gpr_get(struct task_struct *target,
 		   unsigned int pos, unsigned int count,
 		   void *kbuf, void __user *ubuf)
 {
-	struct user_pt_regs *uregs = &task_pt_regs(target)->user_regs;
-	return user_regset_copyout(&pos, &count, &kbuf, &ubuf, uregs, 0, -1);
+	struct user_pt_regs uregs = task_pt_regs(target)->user_regs;
+	uregs.sp &= ~15ULL;
+	return user_regset_copyout(&pos, &count, &kbuf, &ubuf, &uregs, 0, -1);
 }
 
 static int gpr_set(struct task_struct *target, const struct user_regset *regset,
@@ -795,6 +796,9 @@ static int compat_gpr_get(struct task_struct *target,
 		compat_ulong_t reg;
 
 		switch (idx) {
+		case 13:
+			reg = task_pt_regs(target)->compat_sp & ~7UL;
+			break;
 		case 15:
 			reg = task_pt_regs(target)->pc;
 			break;

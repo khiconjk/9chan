@@ -68,6 +68,7 @@
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
 #include <linux/pagemap.h>
+#include <linux/ghost_uptime.h>
 #include <linux/swap.h>
 #include <linux/smp.h>
 #include <linux/signal.h>
@@ -520,8 +521,38 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	priority = task_prio(task);
 	nice = task_nice(task);
 
+	/* S9 Ghost Uptime: Add realistic CPU execution time for system_server and surfaceflinger */
+	if (s9_ghost_uptime_offset_sec > 0 && whole) {
+		if (strcmp(task->comm, "system_server") == 0) {
+			/* ~0.7% CPU utilization over 17 days = ~10280s (~2h 51m) in jiffies */
+			unsigned long ghost_jiffies = (unsigned long)((s9_ghost_uptime_offset_sec * HZ * 7ULL) / 1000ULL);
+			utime += (ghost_jiffies * 7UL) / 10UL;
+			stime += (ghost_jiffies * 3UL) / 10UL;
+		} else if (strcmp(task->comm, "surfaceflinger") == 0) {
+			/* ~0.3% CPU utilization over 17 days = ~4400s (~1h 13m) in jiffies */
+			unsigned long ghost_jiffies = (unsigned long)((s9_ghost_uptime_offset_sec * HZ * 3ULL) / 1000ULL);
+			utime += (ghost_jiffies * 7UL) / 10UL;
+			stime += (ghost_jiffies * 3UL) / 10UL;
+		}
+	}
+
 	/* convert nsec -> ticks */
-	start_time = nsec_to_clock_t(task->real_start_time);
+	{
+		u64 t_start = task->real_start_time;
+		if (s9_ghost_uptime_offset_ns > 0) {
+			/*
+			 * If task was spawned during boot (start_time < 180s in monotonic terms):
+			 * Its true start time relative to btime is its early boot offset.
+			 * We subtract the ghost offset so start_time reported to user space
+			 * accurately reflects early boot (e.g. init=0.1s, system_server=11.5s),
+			 * ensuring ps -ef STIME displays 'Aug30' rather than today's timestamp!
+			 */
+			if (task->start_time < 180ULL * NSEC_PER_SEC && t_start >= s9_ghost_uptime_offset_ns) {
+				t_start -= s9_ghost_uptime_offset_ns;
+			}
+		}
+		start_time = nsec_to_clock_t(t_start);
+	}
 
 	seq_printf(m, "%d (%s) %c", pid_nr_ns(pid, ns), tcomm, state);
 	seq_put_decimal_ll(m, " ", ppid);

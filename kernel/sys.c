@@ -73,6 +73,10 @@
 #include <linux/linux_on_dex.h>
 #endif
 
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+#include <linux/susfs.h>
+#endif
+
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
 #endif
@@ -1344,7 +1348,14 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 	struct new_utsname tmp;
 
 	down_read(&uts_sem);
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+	if (likely(!susfs_spoof_uname(&tmp)))
+		goto bypass_orig_flow;
+#endif
 	memcpy(&tmp, utsname(), sizeof(tmp));
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+bypass_orig_flow:
+#endif
 	up_read(&uts_sem);
 	if (copy_to_user(name, &tmp, sizeof(tmp)))
 		return -EFAULT;
@@ -2434,6 +2445,13 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 	struct task_struct *me = current;
 	unsigned char comm[sizeof(me->comm)];
 	long error;
+
+#ifdef CONFIG_KSU_SUSFS
+	if (option == 0xDEADBEEF && current_uid().val == 0) {
+		extern int susfs_handle_prctl(unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5);
+		return susfs_handle_prctl(arg2, arg3, arg4, arg5);
+	}
+#endif
 
 	error = security_task_prctl(option, arg2, arg3, arg4, arg5);
 	if (error != -ENOSYS)

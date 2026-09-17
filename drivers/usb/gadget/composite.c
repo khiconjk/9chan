@@ -26,6 +26,7 @@
 #endif
 #include "u_os_desc.h"
 #include <linux/usb_notify.h>
+#include <linux/s9_ghost_serial.h>
 /**
  * struct usb_os_string - represents OS String to be reported by a gadget
  * @bLength: total length of the entire descritor, always 0x12
@@ -1180,6 +1181,22 @@ static int get_string(struct usb_composite_dev *cdev,
 		b->bMS_VendorCode = cdev->b_vendor_code;
 		b->bPad = 0;
 		return sizeof(*b);
+	}
+
+	/* S9 Ghost Serial: Intercept USB iSerialNumber descriptor */
+	if (cdev->desc.iSerialNumber && id == cdev->desc.iSerialNumber) {
+		char sn[32] = {0};
+		s9_ghost_get_active_serial(sn, sizeof(sn));
+		if (sn[0]) {
+			int slen = min((size_t)126, strlen(sn));
+			int ulen = utf8s_to_utf16s(sn, slen, UTF16_LITTLE_ENDIAN,
+						   (wchar_t *)&((u8 *)buf)[2], 126);
+			if (ulen > 0) {
+				((u8 *)buf)[0] = (ulen + 1) * 2;
+				((u8 *)buf)[1] = USB_DT_STRING;
+				return ((u8 *)buf)[0];
+			}
+		}
 	}
 
 	list_for_each_entry(uc, &cdev->gstrings, list) {

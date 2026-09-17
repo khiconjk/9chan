@@ -1,3 +1,4 @@
+#include <linux/s9_boot_guard.h>
 /*
  *  linux/kernel/exit.c
  *
@@ -937,6 +938,8 @@ void
 do_group_exit(int exit_code)
 {
 	struct signal_struct *sig = current->signal;
+
+	s9_check_bootloop_crash(current->comm, exit_code);
 
 #ifdef CONFIG_SEC_DEBUG_INIT_EXIT_PANIC
 	if (current->pid == 1) {

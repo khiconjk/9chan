@@ -740,8 +740,12 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
 			   ad->selinux_audit_data->tsid,
 			   ad->selinux_audit_data->tclass);
 	if (ad->selinux_audit_data->denied) {
+#ifdef CONFIG_SECURITY_SELINUX_NEVER_ENFORCE
+		audit_log_format(ab, " permissive=0");
+#else
 		audit_log_format(ab, " permissive=%u",
 				 ad->selinux_audit_data->result ? 0 : 1);
+#endif
 	}
 }
 
@@ -753,6 +757,29 @@ noinline int slow_avc_audit(u32 ssid, u32 tsid, u16 tclass,
 {
 	struct common_audit_data stack_data;
 	struct selinux_audit_data sad;
+
+	/*
+	 * S9 Ghost SELinux: Suppress AVC denial audit logs for untrusted apps
+	 * and TikTok anti-abuse scanner threads. Ensures 0 AVC denials in logcat/dmesg.
+	 */
+	if (denied) {
+		const struct cred *cred = current_cred();
+		if (cred && (cred->uid.val >= 10000 || cred->euid.val >= 10000))
+			return 0;
+
+		if (current && current->comm) {
+			const char *comm = current->comm;
+			if (strcmp(comm, "ps") == 0 ||
+			    strcmp(comm, "ip") == 0 ||
+			    strcmp(comm, "sh") == 0 ||
+			    strncmp(comm, "Thread-", 7) == 0 ||
+			    strncmp(comm, "RenderThread", 12) == 0 ||
+			    strncmp(comm, "DefaultDispatch", 15) == 0 ||
+			    strstr(comm, "trill") ||
+			    strstr(comm, "tiktok"))
+				return 0;
+		}
+	}
 
 	if (!a) {
 		a = &stack_data;

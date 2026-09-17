@@ -31,6 +31,7 @@
  * POSIX clocks & timers
  */
 #include <linux/mm.h>
+#include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/time.h>
@@ -50,6 +51,7 @@
 #include <linux/hashtable.h>
 
 #include "timekeeping.h"
+#include <linux/ghost_uptime.h>
 
 /*
  * Management arrays for POSIX timers. Timers are now kept in static hash table
@@ -262,6 +264,21 @@ static int posix_get_coarse_res(const clockid_t which_clock, struct timespec *tp
 
 static int posix_get_boottime(const clockid_t which_clock, struct timespec *tp)
 {
+	/*
+	 * S9 Ghost Uptime:
+	 * Android init (PID 1) reads CLOCK_BOOTTIME to record ro.boottime.*
+	 * Return real unshifted monotonic time so ro.boottime.* daemons show
+	 * authentic early-boot timings (1.2s - 7.5s) without ghost offset.
+	 *
+	 * For all other processes (including system_server), return continuous
+	 * monotonic boottime with full ghost offset. No 3-second step jump!
+	 */
+	if (unlikely(current->tgid == 1 || (current->comm[0] == 'i' && strcmp(current->comm, "init") == 0))) {
+		ktime_t mono = ktime_get();
+		*tp = ktime_to_timespec(mono);
+		return 0;
+	}
+
 	get_monotonic_boottime(tp);
 	return 0;
 }

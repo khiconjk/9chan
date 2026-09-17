@@ -321,9 +321,8 @@ notrace int __vdso_clock_gettime(clockid_t clock, struct timespec *ts)
 			goto fallback;
 		break;
 	case CLOCK_BOOTTIME:
-		if (do_boottime(vd, ts))
-			goto fallback;
-		break;
+		/* S9 Ghost Uptime: route CLOCK_BOOTTIME through kernel syscall */
+		goto fallback;
 #endif
 	default:
 		goto fallback;

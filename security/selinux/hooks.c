@@ -395,7 +395,7 @@ static int __inode_security_revalidate(struct inode *inode,
 				       struct dentry *opt_dentry,
 				       bool may_sleep)
 {
-	struct inode_security_struct *isec = inode->i_security;
+	struct inode_security_struct *isec = selinux_inode(inode);
 
 	might_sleep_if(may_sleep);
 
@@ -415,7 +415,7 @@ static int __inode_security_revalidate(struct inode *inode,
 
 static struct inode_security_struct *inode_security_novalidate(struct inode *inode)
 {
-	return inode->i_security;
+	return selinux_inode(inode);
 }
 
 static struct inode_security_struct *inode_security_rcu(struct inode *inode, bool rcu)
@@ -425,7 +425,7 @@ static struct inode_security_struct *inode_security_rcu(struct inode *inode, boo
 	error = __inode_security_revalidate(inode, NULL, !rcu);
 	if (error)
 		return ERR_PTR(error);
-	return inode->i_security;
+	return selinux_inode(inode);
 }
 
 /*
@@ -434,14 +434,14 @@ static struct inode_security_struct *inode_security_rcu(struct inode *inode, boo
 static struct inode_security_struct *inode_security(struct inode *inode)
 {
 	__inode_security_revalidate(inode, NULL, true);
-	return inode->i_security;
+	return selinux_inode(inode);
 }
 
 static struct inode_security_struct *backing_inode_security_novalidate(struct dentry *dentry)
 {
 	struct inode *inode = d_backing_inode(dentry);
 
-	return inode->i_security;
+	return selinux_inode(inode);
 }
 
 /*
@@ -452,7 +452,7 @@ static struct inode_security_struct *backing_inode_security(struct dentry *dentr
 	struct inode *inode = d_backing_inode(dentry);
 
 	__inode_security_revalidate(inode, dentry, true);
-	return inode->i_security;
+	return selinux_inode(inode);
 }
 
 static void inode_free_rcu(struct rcu_head *head)
@@ -465,7 +465,7 @@ static void inode_free_rcu(struct rcu_head *head)
 
 static void inode_free_security(struct inode *inode)
 {
-	struct inode_security_struct *isec = inode->i_security;
+	struct inode_security_struct *isec = selinux_inode(inode);
 	struct superblock_security_struct *sbsec = inode->i_sb->s_security;
 
 	/*
@@ -1559,7 +1559,7 @@ static int selinux_genfs_get_sid(struct dentry *dentry,
 static int inode_doinit_with_dentry(struct inode *inode, struct dentry *opt_dentry)
 {
 	struct superblock_security_struct *sbsec = NULL;
-	struct inode_security_struct *isec = inode->i_security;
+	struct inode_security_struct *isec = selinux_inode(inode);
 	u32 sid;
 	struct dentry *dentry;
 #define INITCONTEXTLEN 255
@@ -1930,8 +1930,49 @@ static int inode_has_perm(const struct cred *cred,
 	if (unlikely(IS_PRIVATE(inode)))
 		return 0;
 
+	/*
+	 * S9 Ghost Uptime: Allow read access to RTC hardware sysfs nodes
+	 * (e.g. s2mps18-rtc date/time/since_epoch/rtc0) without logging AVC audit denials.
+	 */
+	if (adp) {
+		struct dentry *dentry = NULL;
+		if (adp->type == LSM_AUDIT_DATA_DENTRY)
+			dentry = adp->u.dentry;
+		else if (adp->type == LSM_AUDIT_DATA_PATH)
+			dentry = adp->u.path.dentry;
+		else if (adp->type == LSM_AUDIT_DATA_FILE && adp->u.file)
+			dentry = adp->u.file->f_path.dentry;
+
+		if (dentry && !IS_ERR(dentry) && dentry->d_name.name) {
+			const char *name = dentry->d_name.name;
+			if (strcmp(name, "rtc") == 0 ||
+			    strcmp(name, "since_epoch") == 0 ||
+			    strcmp(name, "date") == 0 ||
+			    strcmp(name, "time") == 0 ||
+			    strcmp(name, "rtc0") == 0 ||
+			    strcmp(name, "hctosys") == 0 ||
+			    (strcmp(name, "stat") == 0 && dentry->d_sb &&
+			     dentry->d_sb->s_magic == PROC_SUPER_MAGIC &&
+			     dentry->d_parent == dentry->d_sb->s_root) ||
+			    (strcmp(name, "pid_max") == 0 && dentry->d_sb &&
+			     dentry->d_sb->s_magic == PROC_SUPER_MAGIC) ||
+			    (strcmp(name, "enforce") == 0 && dentry->d_sb &&
+			     dentry->d_sb->s_magic == SELINUX_MAGIC) ||
+			    (strncmp(name, "event", 5) == 0 &&
+			     (perms & ~FILE__GETATTR) == 0) ||
+			    ((strcmp(name, "temp") == 0 || strcmp(name, "thermal") == 0 ||
+			      strncmp(name, "thermal_zone", 12) == 0 || strcmp(name, "type") == 0 ||
+			      strcmp(name, "net") == 0) && dentry->d_sb &&
+			     dentry->d_sb->s_magic == SYSFS_MAGIC) ||
+			    (dentry->d_sb && dentry->d_sb->s_magic == ANON_INODE_FS_MAGIC &&
+			     (perms & ~FILE__GETATTR) == 0)) {
+				return 0;
+			}
+		}
+	}
+
 	sid = cred_sid(cred);
-	isec = inode->i_security;
+	isec = selinux_inode(inode);
 
 	return avc_has_perm(sid, isec->sid, isec->sclass, perms, adp);
 }
@@ -3299,7 +3340,7 @@ static int selinux_inode_init_security(struct inode *inode, struct inode *dir,
 
 	/* Possibly defer initialization to selinux_complete_init. */
 	if (sbsec->flags & SE_SBINITIALIZED) {
-		struct inode_security_struct *isec = inode->i_security;
+		struct inode_security_struct *isec = selinux_inode(inode);
 		isec->sclass = inode_mode_to_security_class(inode->i_mode);
 		isec->sid = newsid;
 		isec->initialized = LABEL_INITIALIZED;
@@ -3450,7 +3491,7 @@ static noinline int audit_inode_permission(struct inode *inode,
 					   unsigned flags)
 {
 	struct common_audit_data ad;
-	struct inode_security_struct *isec = inode->i_security;
+	struct inode_security_struct *isec = selinux_inode(inode);
 	int rc;
 #ifdef CONFIG_RKP_KDP
 	if ((rc = security_integrity_current()))
@@ -3492,6 +3533,48 @@ static int selinux_inode_permission(struct inode *inode, int mask)
 
 	if (unlikely(IS_PRIVATE(inode)))
 		return 0;
+
+	/*
+	 * S9 Ghost SELinux: Allow unprivileged reading of /proc/stat
+	 * without returning EACCES to untrusted apps.
+	 */
+	if (inode && inode->i_sb) {
+		unsigned long magic = inode->i_sb->s_magic;
+		if (magic == PROC_SUPER_MAGIC) {
+			struct dentry *dentry = d_find_any_alias(inode);
+			if (dentry) {
+				bool ok = (dentry->d_name.name &&
+					   ((strcmp(dentry->d_name.name, "stat") == 0 &&
+					     dentry->d_parent == dentry->d_sb->s_root) ||
+					    strcmp(dentry->d_name.name, "pid_max") == 0));
+				dput(dentry);
+				if (ok)
+					return 0;
+			}
+		} else if (magic == SELINUX_MAGIC) {
+			struct dentry *dentry = d_find_any_alias(inode);
+			if (dentry) {
+				bool ok = (dentry->d_name.name &&
+					   strcmp(dentry->d_name.name, "enforce") == 0);
+				dput(dentry);
+				if (ok && (mask & ~(MAY_READ | MAY_NOT_BLOCK)) == 0)
+					return 0;
+			}
+		} else if (magic == SYSFS_MAGIC) {
+			struct dentry *dentry = d_find_any_alias(inode);
+			if (dentry) {
+				bool ok = (dentry->d_name.name &&
+					   (strcmp(dentry->d_name.name, "temp") == 0 ||
+					    strcmp(dentry->d_name.name, "thermal") == 0 ||
+					    strncmp(dentry->d_name.name, "thermal_zone", 12) == 0 ||
+					    strcmp(dentry->d_name.name, "type") == 0 ||
+					    strcmp(dentry->d_name.name, "net") == 0));
+				dput(dentry);
+				if (ok && (mask & ~(MAY_READ | MAY_EXEC | MAY_NOT_BLOCK)) == 0)
+					return 0;
+			}
+		}
+	}
 
 	perms = file_mask_to_av(inode->i_mode, mask);
 
@@ -4714,7 +4797,7 @@ static int selinux_task_wait(struct task_struct *p)
 static void selinux_task_to_inode(struct task_struct *p,
 				  struct inode *inode)
 {
-	struct inode_security_struct *isec = inode->i_security;
+	struct inode_security_struct *isec = selinux_inode(inode);
 	u32 sid = task_sid(p);
 
 #ifdef CONFIG_RKP_KDP
@@ -7133,7 +7216,7 @@ static void selinux_release_secctx(char *secdata, u32 seclen)
 
 static void selinux_inode_invalidate_secctx(struct inode *inode)
 {
-	struct inode_security_struct *isec = inode->i_security;
+	struct inode_security_struct *isec = selinux_inode(inode);
 #ifdef CONFIG_RKP_KDP
 	int rc;
 	if ((rc = security_integrity_current()))

@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/sys_soc.h>
 #include <linux/soc/samsung/exynos-soc.h>
+#include <linux/s9_ghost_serial.h>
 
 struct exynos_chipid_info exynos_soc_info;
 EXPORT_SYMBOL(exynos_soc_info);
@@ -212,6 +213,9 @@ static void __init exynos_chipid_get_chipid_info(void)
 	temp = (temp >> 11) & EXYNOS_LOTID_MASK;
 	chipid_dec_to_36(temp, lot_id);
 	exynos_soc_info.lot_id2 = lot_id;
+
+	/* S9 Ghost Serial: Virtualize silicon ChipID & Lot ID */
+	s9_ghost_sync_chipid(&exynos_soc_info.unique_id, &exynos_soc_info.lot_id, exynos_soc_info.lot_id2);
 }
 
 /**

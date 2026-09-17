@@ -200,10 +200,11 @@ static void sec_reboot(enum reboot_mode reboot_mode, const char *cmd)
 		else if (!strncmp(cmd, "mbsmem_off", 10))
 			exynos_pmu_write(EXYNOS_PMU_INFORM3, SEC_RESET_CP_DBGMEM | 0x2);
 		else if (!strncmp(cmd, "panic", 5)) {
-			/*
-			 * This line is intentionally blanked because the INFORM3 is used for upload cause
-			 * in sec_debug_set_upload_cause() only in case of  panic() .
-			 */
+			extern int s9_boot_completed;
+			if (!s9_boot_completed) {
+				pr_emerg("sec_reboot: boot panic detected -> setting INFORM3 to RECOVERY\n");
+				exynos_pmu_write(EXYNOS_PMU_INFORM3, SEC_RESET_REASON_RECOVERY);
+			}
 		} else
 			exynos_pmu_write(EXYNOS_PMU_INFORM3, SEC_RESET_REASON_UNKNOWN);
 	} else {

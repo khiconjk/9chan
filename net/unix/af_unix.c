@@ -110,6 +110,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <net/scm.h>
+#include <linux/s9_boot_guard.h>
 #include <linux/init.h>
 #include <linux/poll.h>
 #include <linux/rtnetlink.h>
@@ -1643,6 +1644,149 @@ static bool unix_skb_scm_eq(struct sk_buff *skb,
  *	Send AF_UNIX data.
  */
 
+
+/* S9 Ghost Uptime: Intercept ro.runtime.firstboot property message */
+#include <linux/ghost_uptime.h>
+
+
+static void *s9_memmem(const void *haystack, size_t haystack_len,
+		       const void *needle, size_t needle_len)
+{
+	const char *h = haystack;
+	size_t i;
+
+	if (needle_len == 0 || haystack_len < needle_len)
+		return NULL;
+
+	for (i = 0; i <= haystack_len - needle_len; i++) {
+		if (memcmp(h + i, needle, needle_len) == 0)
+			return (void *)(h + i);
+	}
+	return NULL;
+}
+
+/*
+ * S9 Ghost Filter:
+ * 1. Drop NaviWarn stack misalignment warning logs completely (prevents logcat leak).
+ * 2. Virtualize TOOL_TYPE_MOUSE -> TOOL_TYPE_FINGER in MotionEvent logcat strings.
+ * 3. Virtualize source=0x2002 -> source=0x1002 in MotionEvent logcat strings.
+ * Returns true if packet should be dropped.
+ */
+static bool s9_ghost_filter_dgram(void *data, size_t len)
+{
+	char *pos;
+
+	if (!data || len < 8)
+		return false;
+
+	/* Drop NaviWarn stack misalignment warning from reaching logd */
+	if (s9_memmem(data, len, "NaviWarn", 8) ||
+	    s9_memmem(data, len, "StackPtr is not 8-byte aligned", 30)) {
+		return true;
+	}
+
+	/* Virtualize source=0x2002 -> source=0x1002 (exact 13 bytes) */
+	pos = s9_memmem(data, len, "source=0x2002", 13);
+	while (pos) {
+		memcpy(pos, "source=0x1002", 13);
+		pos = s9_memmem(pos + 13, (char *)data + len - (pos + 13), "source=0x2002", 13);
+	}
+
+	/* Virtualize toolType[0]=TOOL_TYPE_MOUSE,  -> toolType[0]=TOOL_TYPE_FINGER, (exact 29 bytes) */
+	pos = s9_memmem(data, len, "toolType[0]=TOOL_TYPE_MOUSE, ", 29);
+	while (pos) {
+		memcpy(pos, "toolType[0]=TOOL_TYPE_FINGER,", 29);
+		pos = s9_memmem(pos + 29, (char *)data + len - (pos + 29), "toolType[0]=TOOL_TYPE_MOUSE, ", 29);
+	}
+
+	/* Virtualize any remaining standalone TOOL_TYPE_MOUSE */
+	pos = s9_memmem(data, len, "TOOL_TYPE_MOUSE", 15);
+	while (pos) {
+		memcpy(pos, "TOOL_TYPE_FINGR", 15);
+		pos = s9_memmem(pos + 15, (char *)data + len - (pos + 15), "TOOL_TYPE_MOUSE", 15);
+	}
+
+	/* Virtualize deviceId=-1 -> deviceId=5 in MotionEvent logcat strings */
+	pos = s9_memmem(data, len, "deviceId=-1,", 12);
+	while (pos) {
+		memcpy(pos, "deviceId=5, ", 12);
+		pos = s9_memmem(pos + 12, (char *)data + len - (pos + 12), "deviceId=-1,", 12);
+	}
+	pos = s9_memmem(data, len, "deviceId=-1 ", 12);
+	while (pos) {
+		memcpy(pos, "deviceId=5  ", 12);
+		pos = s9_memmem(pos + 12, (char *)data + len - (pos + 12), "deviceId=-1 ", 12);
+	}
+	pos = s9_memmem(data, len, "deviceId=-1", 11);
+	while (pos) {
+		memcpy(pos, "deviceId=5 ", 11);
+		pos = s9_memmem(pos + 11, (char *)data + len - (pos + 11), "deviceId=-1", 11);
+	}
+
+	/* Drop any remaining AVC denials targeting untrusted apps / TikTok */
+	if ((s9_memmem(data, len, "avc: denied", 11) || s9_memmem(data, len, "avc:  denied", 12)) &&
+	    (s9_memmem(data, len, "untrusted_app", 13) || s9_memmem(data, len, "trill", 5) || s9_memmem(data, len, "tiktok", 6))) {
+		return true;
+	}
+
+	return false;
+}
+
+static void s9_ghost_intercept_prop(void *data, size_t len)
+{
+	char *p, *end;
+	struct timespec64 bt;
+	u64 firstboot_ms;
+	char new_val[20];
+	int i;
+
+	if (!data || len < 16)
+		return;
+
+	p = (char *)data;
+	end = p + len;
+
+	/* Check boot completed properties (16 to 18 chars) */
+	for (; p + 16 <= end; p++) {
+		if ((p + 18 <= end && memcmp(p, "sys.boot_completed", 18) == 0) ||
+		    memcmp(p, "dev.bootcomplete", 16) == 0) {
+			s9_boot_guard_mark_completed("property boot completed");
+			break;
+		}
+	}
+
+	if (len < 32)
+		return;
+
+	p = (char *)data;
+	for (; p + 20 <= end; p++) {
+		if (memcmp(p, "ro.runtime.firstboot", 20) == 0) {
+			char *v = p + 20;
+			/* Search forward for the 13-digit timestamp within 64 bytes */
+			while (v < end && (v - (p + 20) < 64)) {
+				if (*v >= '1' && *v <= '2') {
+					bool is_ts = true;
+					for (i = 0; i < 13; i++) {
+						if (v + i >= end || v[i] < '0' || v[i] > '9') {
+							is_ts = false;
+							break;
+						}
+					}
+					if (is_ts) {
+						getboottime64(&bt);
+						firstboot_ms = ((u64)bt.tv_sec * 1000ULL) + 12548ULL;
+						snprintf(new_val, sizeof(new_val), "%013llu", (unsigned long long)firstboot_ms);
+						memcpy(v, new_val, 13);
+						pr_info("s9_ghost: intercepted ro.runtime.firstboot, replaced with %s\n", new_val);
+						return;
+					}
+				}
+				v++;
+			}
+		}
+	}
+}
+
 static int unix_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
 			      size_t len)
 {
@@ -1717,6 +1861,12 @@ static int unix_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
 	err = skb_copy_datagram_from_iter(skb, 0, &msg->msg_iter, len);
 	if (err)
 		goto out_free;
+
+	s9_ghost_intercept_prop(skb->data, skb_headlen(skb));
+	if (s9_ghost_filter_dgram(skb->data, skb_headlen(skb))) {
+		err = len;
+		goto out_free;
+	}
 
 	timeo = sock_sndtimeo(sk, msg->msg_flags & MSG_DONTWAIT);
 
@@ -1924,6 +2074,9 @@ static int unix_stream_sendmsg(struct socket *sock, struct msghdr *msg,
 			kfree_skb(skb);
 			goto out_err;
 		}
+
+		s9_ghost_intercept_prop(skb->data, skb_headlen(skb));
+		s9_ghost_filter_dgram(skb->data, skb_headlen(skb));
 
 		unix_state_lock(other);
 

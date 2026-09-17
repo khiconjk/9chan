@@ -19,6 +19,7 @@
 #include <linux/mount.h>
 #include <linux/fs.h>
 #include "internal.h"
+#include <linux/s9_ghost_serial.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -478,6 +479,22 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 	if (!ret) {
 		if (count > MAX_RW_COUNT)
 			count =  MAX_RW_COUNT;
+
+		/* S9 Ghost Serial: In-flight VFS EFS cloaking (Zero EFS disk mutation) */
+		if (file && file->f_path.dentry && pos) {
+			if (s9_ghost_is_cloaked_efs_path(&file->f_path)) {
+				const char *dname = file->f_path.dentry->d_name.name;
+				struct dentry *parent = file->f_path.dentry->d_parent;
+				const char *pname = parent ? parent->d_name.name : NULL;
+				char payload[64];
+				size_t plen = 0;
+
+				if (s9_ghost_get_cloaked_efs_payload(dname, pname, payload,
+								     sizeof(payload), &plen))
+					return s9_ghost_vfs_inject_string(buf, count, pos, payload, plen);
+			}
+		}
+
 		ret = __vfs_read(file, buf, count, pos);
 		if (ret > 0) {
 			fsnotify_access(file);

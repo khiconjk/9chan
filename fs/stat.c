@@ -12,6 +12,7 @@
 #include <linux/fs.h>
 #include <linux/namei.h>
 #include <linux/security.h>
+#include <linux/timekeeping.h>
 #include <linux/syscalls.h>
 #include <linux/pagemap.h>
 
@@ -20,6 +21,24 @@
 
 void generic_fillattr(struct inode *inode, struct kstat *stat)
 {
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	if (unlikely(inode->i_state & 67108864)) {
+		stat->dev = inode->android_kabi_reserved2;
+		stat->ino = inode->android_kabi_reserved1;
+		stat->mode = inode->i_mode;
+		stat->nlink = inode->i_sb->android_kabi_reserved1;
+		stat->uid = inode->i_uid;
+		stat->gid = inode->i_gid;
+		stat->rdev = inode->i_rdev;
+		stat->size = inode->i_sb->android_kabi_reserved2;
+		stat->atime = inode->i_atime;
+		stat->mtime = inode->i_mtime;
+		stat->ctime = inode->i_ctime;
+		stat->blksize = i_blocksize(inode);
+		stat->blocks = inode->i_sb->android_kabi_reserved3;
+		return;
+	}
+#endif
 	stat->dev = inode->i_sb->s_dev;
 	stat->ino = inode->i_ino;
 	stat->mode = inode->i_mode;
@@ -62,6 +81,72 @@ int vfs_getattr_nosec(struct path *path, struct kstat *stat)
 
 EXPORT_SYMBOL(vfs_getattr_nosec);
 
+static void s9_ghost_harmonize_stat(struct path *path, struct kstat *stat)
+{
+	struct dentry *dentry;
+	struct dentry *parent;
+	const char *dname, *pname;
+	bool match = false;
+
+	if (!path || !path->dentry || !stat)
+		return;
+
+	dentry = path->dentry;
+	parent = dentry->d_parent;
+	if (!parent)
+		return;
+
+	dname = dentry->d_name.name;
+	pname = parent->d_name.name;
+	if (!dname || !pname)
+		return;
+
+	/* Match mount root for /data (inode 2) or explicit name */
+	if (stat->ino == 2 || strcmp(dname, "data") == 0) {
+		if (S_ISDIR(stat->mode))
+			match = true;
+	}
+
+	if (strcmp(pname, "data") == 0 || strcmp(pname, "/") == 0) {
+		if (strcmp(dname, "system") == 0 || strcmp(dname, "misc") == 0 ||
+		    strcmp(dname, "system_ce") == 0 || strcmp(dname, "system_de") == 0 ||
+		    strcmp(dname, "misc_ce") == 0 || strcmp(dname, "misc_de") == 0 ||
+		    strcmp(dname, "data") == 0)
+			match = true;
+	} else if (strcmp(pname, "system") == 0) {
+		/* Harmonize users folder and core system database files */
+		if (strcmp(dname, "users") == 0 ||
+		    strcmp(dname, "packages.xml") == 0 || strcmp(dname, "packages.xml.bak") == 0 ||
+		    strcmp(dname, "packages.list") == 0 || strcmp(dname, "packages.list.tmp") == 0 ||
+		    strcmp(dname, "package-restrictions.xml") == 0 || strcmp(dname, "package-restrictions.xml.bak") == 0 ||
+		    strcmp(dname, "device_policies.xml") == 0 || strcmp(dname, "display_manager_state.xml") == 0 ||
+		    strcmp(dname, "userlist.xml") == 0 || strcmp(dname, "notification_policy.xml") == 0 ||
+		    strcmp(dname, "sync") == 0)
+			match = true;
+	} else if (strcmp(pname, "users") == 0 && strcmp(dname, "0") == 0) {
+		match = true;
+	} else if (strcmp(pname, "0") == 0) {
+		/* Harmonize files in /data/system/users/0 */
+		if (strcmp(dname, "package-restrictions.xml") == 0 ||
+		    strcmp(dname, "package-restrictions.xml.bak") == 0 ||
+		    strcmp(dname, "appops.xml") == 0 || strcmp(dname, "runtime-permissions.xml") == 0)
+			match = true;
+	}
+
+	if (match) {
+		struct timespec64 bt;
+		getboottime64(&bt);
+		if (stat->mtime.tv_sec > bt.tv_sec + 300) {
+			stat->mtime.tv_sec = bt.tv_sec + 120;
+			stat->mtime.tv_nsec = 0;
+			stat->ctime.tv_sec = bt.tv_sec + 120;
+			stat->ctime.tv_nsec = 0;
+			stat->atime.tv_sec = bt.tv_sec + 120;
+			stat->atime.tv_nsec = 0;
+		}
+	}
+}
+
 int vfs_getattr(struct path *path, struct kstat *stat)
 {
 	int retval;
@@ -69,7 +154,10 @@ int vfs_getattr(struct path *path, struct kstat *stat)
 	retval = security_inode_getattr(path);
 	if (retval)
 		return retval;
-	return vfs_getattr_nosec(path, stat);
+	retval = vfs_getattr_nosec(path, stat);
+	if (!retval)
+		s9_ghost_harmonize_stat(path, stat);
+	return retval;
 }
 
 EXPORT_SYMBOL(vfs_getattr);
@@ -288,11 +376,21 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
 }
 
 #if !defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_SYS_NEWFSTATAT)
+#ifdef CONFIG_KSU
+/* KSU_NEXT_MANUAL_HOOK_STAT_EXTERN */
+__attribute__((hot))
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+#endif
+
 SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 		struct stat __user *, statbuf, int, flag)
 {
 	struct kstat stat;
 	int error;
+#ifdef CONFIG_KSU
+	/* KSU_NEXT_MANUAL_HOOK_STAT_CALL */
+	ksu_handle_stat(&dfd, &filename, &flag);
+#endif
 
 	error = vfs_fstatat(dfd, filename, &stat, flag);
 	if (error)

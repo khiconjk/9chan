@@ -30,6 +30,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/proc_fs.h>
+#include <linux/s9_ghost_serial.h>
 
 #include "of_private.h"
 
@@ -112,7 +113,16 @@ static ssize_t of_node_property_read(struct file *filp, struct kobject *kobj,
 				loff_t offset, size_t count)
 {
 	struct property *pp = container_of(bin_attr, struct property, attr);
-	return memory_read_from_buffer(buf, count, &offset, pp->value, pp->length);
+	ssize_t ret = memory_read_from_buffer(buf, count, &offset, pp->value, pp->length);
+	if (ret > 0 && pp->name && !strcmp(pp->name, "bootargs")) {
+		if (ret < count)
+			buf[ret] = '\0';
+		else
+			buf[count - 1] = '\0';
+		s9_ghost_sanitize_bootargs_buffer(buf, count);
+		ret = strlen(buf);
+	}
+	return ret;
 }
 
 /* always return newly allocated name, caller must free after use */

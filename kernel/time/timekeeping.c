@@ -45,6 +45,164 @@ static struct {
 
 static DEFINE_RAW_SPINLOCK(timekeeper_lock);
 static struct timekeeper shadow_timekeeper;
+/*
+ * Forward declaration: timekeeping_update() is defined at ~L769 but called
+ * from the sysfs store below. If upstream ever changes this signature,
+ * update BOTH the declaration here AND the definition below.
+ */
+static void timekeeping_update(struct timekeeper *tk, unsigned int action);
+
+/* S9_GHOST_UPTIME_SUITE_START */
+#include <linux/ghost_uptime.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
+#include <linux/random.h>
+
+u64 s9_ghost_uptime_offset_sec = 17ULL * 86400ULL;
+u64 s9_ghost_uptime_offset_ns = 17ULL * 86400ULL * NSEC_PER_SEC;
+EXPORT_SYMBOL_GPL(s9_ghost_uptime_offset_sec);
+EXPORT_SYMBOL_GPL(s9_ghost_uptime_offset_ns);
+u64 s9_ghost_mono_offset_sec = (17ULL * 86400ULL * 85ULL) / 1000ULL;
+u64 s9_ghost_mono_offset_ns = ((17ULL * 86400ULL * 85ULL) / 1000ULL) * NSEC_PER_SEC;
+EXPORT_SYMBOL_GPL(s9_ghost_mono_offset_sec);
+EXPORT_SYMBOL_GPL(s9_ghost_mono_offset_ns);
+
+/* BUG-1 fix: track the real offs_boot at init so sysfs store can preserve it */
+static ktime_t s9_real_offs_boot_at_init;
+
+static u64 ghost_uptime_cmdline_sec = 0;
+static int __init setup_ghost_uptime_sec(char *str)
+{
+	unsigned long long val = 0;
+	if (!kstrtoull(str, 10, &val) && val > 0)
+		ghost_uptime_cmdline_sec = val;
+	return 1;
+}
+__setup("ghost_uptime_sec=", setup_ghost_uptime_sec);
+
+void s9_ghost_uptime_init(u64 rtc_sec)
+{
+	u64 days, extra_sec, seed;
+
+	if (ghost_uptime_cmdline_sec > 0) {
+		s9_ghost_uptime_offset_sec = ghost_uptime_cmdline_sec;
+	} else if (rtc_sec > 0) {
+		/*
+		 * DETECT-2 fix: Mix RTC with multiple entropy sources for
+		 * better randomness. Use Knuth multiplicative hash on a
+		 * composite seed to break deterministic patterns.
+		 */
+		seed = rtc_sec ^ (rtc_sec >> 7) ^ ((u64)jiffies_64);
+		days = 15ULL + (seed % 11ULL);
+		extra_sec = ((seed * 2654435761ULL) >> 5) % 86400ULL;
+		s9_ghost_uptime_offset_sec = (days * 86400ULL) + extra_sec;
+	} else {
+		s9_ghost_uptime_offset_sec = 17ULL * 86400ULL;
+	}
+	s9_ghost_uptime_offset_ns = s9_ghost_uptime_offset_sec * NSEC_PER_SEC;
+	s9_ghost_mono_offset_sec = (s9_ghost_uptime_offset_sec * 85ULL) / 1000ULL;
+	s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
+	pr_debug("pwr_stats: init %llu s\n",
+		(unsigned long long)s9_ghost_uptime_offset_sec);
+}
+
+void s9_ghost_uptime_apply_boot_offset(struct timekeeper *tk)
+{
+	/* Save the real offs_boot BEFORE adding ghost offset */
+	s9_real_offs_boot_at_init = tk->offs_boot;
+	tk->offs_boot = ktime_add(tk->offs_boot, ns_to_ktime(s9_ghost_uptime_offset_ns));
+	pr_debug("pwr_stats: boot offset applied\n");
+}
+
+u64 s9_ghost_uptime_get_sec(void)
+{
+	return s9_ghost_uptime_offset_sec;
+}
+EXPORT_SYMBOL_GPL(s9_ghost_uptime_get_sec);
+
+u64 s9_ghost_uptime_get_ns(void)
+{
+	return s9_ghost_uptime_offset_ns;
+}
+EXPORT_SYMBOL_GPL(s9_ghost_uptime_get_ns);
+
+/* Sysfs interface: /sys/kernel/power_stats/offset_sec */
+static ssize_t pwr_stats_offset_sec_show(struct kobject *kobj,
+					  struct kobj_attribute *attr,
+					  char *buf)
+{
+	return sprintf(buf, "%llu\n", (unsigned long long)s9_ghost_uptime_offset_sec);
+}
+
+static ssize_t pwr_stats_offset_sec_store(struct kobject *kobj,
+					   struct kobj_attribute *attr,
+					   const char *buf, size_t count)
+{
+	u64 new_sec = 0;
+	u64 old_offset_ns;
+	ktime_t real_suspend_part;
+
+	if (kstrtoull(buf, 10, &new_sec))
+		return -EINVAL;
+	if (new_sec == 0)
+		return -EINVAL;
+
+	{
+		unsigned long flags;
+		raw_spin_lock_irqsave(&timekeeper_lock, flags);
+		write_seqcount_begin(&tk_core.seq);
+
+		old_offset_ns = s9_ghost_uptime_offset_ns;
+		real_suspend_part = ktime_sub(tk_core.timekeeper.offs_boot,
+			ns_to_ktime(old_offset_ns));
+		if (ktime_to_ns(real_suspend_part) < ktime_to_ns(s9_real_offs_boot_at_init))
+			real_suspend_part = s9_real_offs_boot_at_init;
+
+		s9_ghost_uptime_offset_sec = new_sec;
+		s9_ghost_uptime_offset_ns = new_sec * NSEC_PER_SEC;
+		s9_ghost_mono_offset_sec = (new_sec * 85ULL) / 1000ULL;
+		s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
+
+		tk_core.timekeeper.offs_boot = ktime_add(real_suspend_part,
+			ns_to_ktime(s9_ghost_uptime_offset_ns));
+		timekeeping_update(&tk_core.timekeeper, TK_MIRROR);
+		write_seqcount_end(&tk_core.seq);
+		raw_spin_unlock_irqrestore(&timekeeper_lock, flags);
+	}
+
+	pr_debug("pwr_stats: offset updated to %llu s\n", (unsigned long long)new_sec);
+	return count;
+}
+
+static struct kobj_attribute pwr_stats_offset_attr =
+	__ATTR(offset_sec, 0600, pwr_stats_offset_sec_show, pwr_stats_offset_sec_store);
+
+static struct attribute *pwr_stats_attrs[] = {
+	&pwr_stats_offset_attr.attr,
+	NULL,
+};
+
+static struct attribute_group pwr_stats_attr_group = {
+	.attrs = pwr_stats_attrs,
+};
+
+struct kobject *pwr_stats_kobj;
+EXPORT_SYMBOL_GPL(pwr_stats_kobj);
+
+static int __init s9_ghost_uptime_sysfs_init(void)
+{
+	int ret;
+	/* DETECT-6: Generic name to avoid fingerprinting */
+	pwr_stats_kobj = kobject_create_and_add("power_stats", kernel_kobj);
+	if (!pwr_stats_kobj)
+		return -ENOMEM;
+	ret = sysfs_create_group(pwr_stats_kobj, &pwr_stats_attr_group);
+	if (ret)
+		kobject_put(pwr_stats_kobj);
+	return ret;
+}
+late_initcall(s9_ghost_uptime_sysfs_init);
+/* S9_GHOST_UPTIME_SUITE_END */
 
 /**
  * struct tk_fast - NMI safe timekeeper
@@ -1557,6 +1715,8 @@ void __init timekeeping_init(void)
 
 	tk_set_xtime(tk, &now);
 	tk->raw_sec = 0;
+	s9_ghost_uptime_init((u64)now.tv_sec);
+	s9_ghost_uptime_apply_boot_offset(tk);
 	if (boot.tv_sec == 0 && boot.tv_nsec == 0)
 		boot = tk_xtime(tk);
 

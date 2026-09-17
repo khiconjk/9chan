@@ -2366,7 +2366,7 @@ static int sec_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 
 	if (ts->plat_data->support_dex) {
 		ts->input_dev_pad->name = "sec_touchpad";
-		sec_ts_set_input_prop(ts, ts->input_dev_pad, INPUT_PROP_POINTER);
+		sec_ts_set_input_prop(ts, ts->input_dev_pad, INPUT_PROP_DIRECT);
 	}
 	ts->dex_name = "";
 

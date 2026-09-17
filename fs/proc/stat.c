@@ -11,6 +11,7 @@
 #include <linux/irqnr.h>
 #include <linux/cputime.h>
 #include <linux/tick.h>
+#include <linux/ghost_uptime.h>
 
 #ifdef CONFIG_LOD_SEC
 #include <linux/linux_on_dex.h>
@@ -90,6 +91,26 @@ static int show_stat(struct seq_file *p, void *v)
 	u64 sum_softirq = 0;
 	unsigned int per_softirq_sums[NR_SOFTIRQS] = {0};
 	struct timespec64 boottime;
+	u64 g_user = 0, g_nice = 0, g_sys = 0, g_idle = 0, g_iowait = 0;
+	u64 g_irq = 0, g_softirq = 0;
+	u64 ghost_ctxt = 0, ghost_procs = 0;
+
+	if (s9_ghost_uptime_offset_sec > 0) {
+		u64 ghost_base_ns = s9_ghost_uptime_offset_sec * NSEC_PER_SEC;
+		/* DETECT-3: Realistic distribution across ALL tick categories */
+		g_idle    = (ghost_base_ns / 1000ULL) * 870ULL;  /* 87.0% */
+		g_user    = (ghost_base_ns / 1000ULL) * 58ULL;   /* 5.8% */
+		g_nice    = (ghost_base_ns / 1000ULL) * 15ULL;   /* 1.5% */
+		g_sys     = (ghost_base_ns / 1000ULL) * 40ULL;   /* 4.0% */
+		g_iowait  = (ghost_base_ns / 1000ULL) * 10ULL;   /* 1.0% */
+		g_irq     = (ghost_base_ns / 1000ULL) * 3ULL;    /* 0.3% */
+		g_softirq = (ghost_base_ns / 1000ULL) * 4ULL;    /* 0.4% */
+		/* Total: 100.0% */
+
+		/* DETECT-4: Ghost context switches (~500/sec) and forks (~0.5/sec) */
+		ghost_ctxt = s9_ghost_uptime_offset_sec * 500ULL;
+		ghost_procs = s9_ghost_uptime_offset_sec / 2ULL;
+	}
 
 	user = nice = system = idle = iowait =
 		irq = softirq = steal = 0;
@@ -97,13 +118,43 @@ static int show_stat(struct seq_file *p, void *v)
 	getboottime64(&boottime);
 
 	for_each_possible_cpu(i) {
-		user += kcpustat_cpu(i).cpustat[CPUTIME_USER];
-		nice += kcpustat_cpu(i).cpustat[CPUTIME_NICE];
-		system += kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM];
-		idle += get_idle_time(i);
-		iowait += get_iowait_time(i);
-		irq += kcpustat_cpu(i).cpustat[CPUTIME_IRQ];
-		softirq += kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ];
+		/*
+		 * DETECT-1: Per-core variance for big.LITTLE (Exynos 9810).
+		 * Cores 0-3 (Mongoose M3 big): 1.15x user/sys (run more)
+		 * Cores 4-7 (Cortex-A55 LITTLE): 0.85x user/sys (idle more)
+		 * Jitter: ±(cpu_index * 3)% for natural variation.
+		 */
+		u64 scale_user, scale_nice, scale_sys, scale_idle;
+		u64 scale_iowait, scale_irq, scale_softirq;
+		u64 jitter = (u64)(i * 3);
+
+		if (i < 4) {
+			/* Big cores: more active, less idle */
+			scale_user    = g_user + (g_user * (15 + jitter)) / 1000;
+			scale_nice    = g_nice + (g_nice * (10 + jitter)) / 1000;
+			scale_sys     = g_sys  + (g_sys  * (15 + jitter)) / 1000;
+			scale_idle    = g_idle - (g_idle * (20 + jitter)) / 1000;
+			scale_iowait  = g_iowait + (g_iowait * jitter) / 1000;
+			scale_irq     = g_irq  + (g_irq  * (20 + jitter)) / 1000;
+			scale_softirq = g_softirq + (g_softirq * (15 + jitter)) / 1000;
+		} else {
+			/* LITTLE cores: less active, more idle */
+			scale_user    = g_user - (g_user * (15 + jitter)) / 1000;
+			scale_nice    = g_nice - (g_nice * (10 + jitter)) / 1000;
+			scale_sys     = g_sys  - (g_sys  * (15 + jitter)) / 1000;
+			scale_idle    = g_idle + (g_idle * (10 + jitter)) / 1000;
+			scale_iowait  = g_iowait - (g_iowait * jitter) / 1000;
+			scale_irq     = g_irq  - (g_irq  * (10 + jitter)) / 1000;
+			scale_softirq = g_softirq - (g_softirq * (10 + jitter)) / 1000;
+		}
+
+		user += kcpustat_cpu(i).cpustat[CPUTIME_USER] + scale_user;
+		nice += kcpustat_cpu(i).cpustat[CPUTIME_NICE] + scale_nice;
+		system += kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM] + scale_sys;
+		idle += get_idle_time(i) + scale_idle;
+		iowait += get_iowait_time(i) + scale_iowait;
+		irq += kcpustat_cpu(i).cpustat[CPUTIME_IRQ] + scale_irq;
+		softirq += kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ] + scale_softirq;
 		steal += kcpustat_cpu(i).cpustat[CPUTIME_STEAL];
 		guest += kcpustat_cpu(i).cpustat[CPUTIME_GUEST];
 		guest_nice += kcpustat_cpu(i).cpustat[CPUTIME_GUEST_NICE];
@@ -132,14 +183,41 @@ static int show_stat(struct seq_file *p, void *v)
 	seq_putc(p, '\n');
 
 	for_each_online_cpu(i) {
+		u64 sc_user, sc_nice, sc_sys, sc_idle;
+		u64 sc_iowait, sc_irq, sc_softirq;
+		u64 jitter = (u64)(i * 3);
+
+		if (s9_ghost_uptime_offset_sec > 0) {
+			if (i < 4) {
+				sc_user    = g_user + (g_user * (15 + jitter)) / 1000;
+				sc_nice    = g_nice + (g_nice * (10 + jitter)) / 1000;
+				sc_sys     = g_sys  + (g_sys  * (15 + jitter)) / 1000;
+				sc_idle    = g_idle - (g_idle * (20 + jitter)) / 1000;
+				sc_iowait  = g_iowait + (g_iowait * jitter) / 1000;
+				sc_irq     = g_irq  + (g_irq  * (20 + jitter)) / 1000;
+				sc_softirq = g_softirq + (g_softirq * (15 + jitter)) / 1000;
+			} else {
+				sc_user    = g_user - (g_user * (15 + jitter)) / 1000;
+				sc_nice    = g_nice - (g_nice * (10 + jitter)) / 1000;
+				sc_sys     = g_sys  - (g_sys  * (15 + jitter)) / 1000;
+				sc_idle    = g_idle + (g_idle * (10 + jitter)) / 1000;
+				sc_iowait  = g_iowait - (g_iowait * jitter) / 1000;
+				sc_irq     = g_irq  - (g_irq  * (10 + jitter)) / 1000;
+				sc_softirq = g_softirq - (g_softirq * (10 + jitter)) / 1000;
+			}
+		} else {
+			sc_user = sc_nice = sc_sys = sc_idle = 0;
+			sc_iowait = sc_irq = sc_softirq = 0;
+		}
+
 		/* Copy values here to work around gcc-2.95.3, gcc-2.96 */
-		user = kcpustat_cpu(i).cpustat[CPUTIME_USER];
-		nice = kcpustat_cpu(i).cpustat[CPUTIME_NICE];
-		system = kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM];
-		idle = get_idle_time(i);
-		iowait = get_iowait_time(i);
-		irq = kcpustat_cpu(i).cpustat[CPUTIME_IRQ];
-		softirq = kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ];
+		user = kcpustat_cpu(i).cpustat[CPUTIME_USER] + sc_user;
+		nice = kcpustat_cpu(i).cpustat[CPUTIME_NICE] + sc_nice;
+		system = kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM] + sc_sys;
+		idle = get_idle_time(i) + sc_idle;
+		iowait = get_iowait_time(i) + sc_iowait;
+		irq = kcpustat_cpu(i).cpustat[CPUTIME_IRQ] + sc_irq;
+		softirq = kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ] + sc_softirq;
 		steal = kcpustat_cpu(i).cpustat[CPUTIME_STEAL];
 		guest = kcpustat_cpu(i).cpustat[CPUTIME_GUEST];
 		guest_nice = kcpustat_cpu(i).cpustat[CPUTIME_GUEST_NICE];
@@ -177,12 +255,12 @@ static int show_stat(struct seq_file *p, void *v)
 		"procs_running %lu\n"
 		"procs_blocked %lu\n",
 #ifdef CONFIG_LOD_SEC
-		current_is_LOD() ? 0ULL : nr_context_switches(),
+		current_is_LOD() ? 0ULL : (nr_context_switches() + ghost_ctxt),
 #else
-		nr_context_switches(),
+		nr_context_switches() + ghost_ctxt,
 #endif
 		(unsigned long long)boottime.tv_sec,
-		total_forks,
+		total_forks + (unsigned long)ghost_procs,
 		nr_running(),
 		nr_iowait());
 

@@ -1,0 +1,6 @@
+S9 stock Q v113 KernelSU Next + SuSFS bridge
+KSU_DIR=drivers/kernelsu
+SUSFS_BRANCH=1.4.2-kernel-4.9
+SUSFS_REPO=https://gitlab.com/1392726643/susfs4ksu.git
+required_config=CONFIG_KSU=y CONFIG_KSU_MANUAL_HOOK=y CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_KSTAT=n
+uptime_design=unchanged from v113 timekeeping-only /proc uptime patch

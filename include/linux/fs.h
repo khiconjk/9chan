@@ -1789,6 +1789,11 @@ struct file_operations {
 #if defined(CONFIG_ECRYPT_FS_PRIVATE)
 	struct file* (*get_lower_file)(struct file *f);
 #endif
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	u64 android_kabi_reserved1;
+	u64 android_kabi_reserved2;
+	u64 android_kabi_reserved3;
+#endif
 };
 
 struct inode_operations {

@@ -59,7 +59,7 @@ struct page *selinux_kernel_status_page(void)
 			status->version = SELINUX_KERNEL_STATUS_VERSION;
 			status->sequence = 0;
 // [ SEC_SELINUX_PORTING_COMMON
-#ifdef CONFIG_ALWAYS_ENFORCE
+#if defined(CONFIG_ALWAYS_ENFORCE) || defined(CONFIG_SECURITY_SELINUX_NEVER_ENFORCE)
 			status->enforcing = 1;
 #else
 			status->enforcing = selinux_enforcing;
@@ -97,7 +97,11 @@ void selinux_status_update_setenforce(int enforcing)
 		status->sequence++;
 		smp_wmb();
 
+#ifdef CONFIG_SECURITY_SELINUX_NEVER_ENFORCE
+		status->enforcing = 1;
+#else
 		status->enforcing = enforcing;
+#endif
 
 		smp_wmb();
 		status->sequence++;

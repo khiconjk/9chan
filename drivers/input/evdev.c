@@ -287,6 +287,26 @@ static void evdev_pass_values(struct evdev_client *client,
 		event.type = v->type;
 		event.code = v->code;
 		event.value = v->value;
+
+		/* S9 Ghost Input: Virtualize TOOL_TYPE_MOUSE -> TOOL_TYPE_FINGER */
+		if (event.type == EV_KEY) {
+			if (event.code >= BTN_MOUSE && event.code <= BTN_TASK)
+				event.code = BTN_TOUCH;
+			else if (event.code == BTN_TOOL_MOUSE)
+				event.code = BTN_TOOL_FINGER;
+
+			/* S9 Ghost Input: Debounce impossible micro-clicks (< 60ms) to protect from bot flagging */
+			if (event.code == BTN_TOUCH && event.value == 1) {
+				static u64 last_touch_ns;
+				u64 now_ns = ktime_get_ns();
+				if (last_touch_ns && (now_ns - last_touch_ns) < 60000000ULL)
+					continue;
+				last_touch_ns = now_ns;
+			}
+		} else if (event.type == EV_ABS) {
+			if (event.code == ABS_MT_TOOL_TYPE && (event.value == 3 || event.value == 2))
+				event.value = 0; /* MT_TOOL_FINGER */
+		}
 		__pass_event(client, &event);
 	}
 
@@ -813,7 +833,19 @@ static int handle_eviocgbit(struct input_dev *dev,
 	switch (type) {
 
 	case      0: bits = dev->evbit;  len = EV_MAX;  break;
-	case EV_KEY: bits = dev->keybit; len = KEY_MAX; break;
+	case EV_KEY: {
+		unsigned long keybit_virt[BITS_TO_LONGS(KEY_MAX)];
+		memcpy(keybit_virt, dev->keybit, sizeof(keybit_virt));
+		if (test_bit(BTN_MOUSE, keybit_virt) || test_bit(BTN_TOOL_MOUSE, keybit_virt)) {
+			int b;
+			for (b = BTN_MISC; b <= BTN_TASK; b++)
+				clear_bit(b, keybit_virt);
+			clear_bit(BTN_TOOL_MOUSE, keybit_virt);
+			set_bit(BTN_TOUCH, keybit_virt);
+			set_bit(BTN_TOOL_FINGER, keybit_virt);
+		}
+		return bits_to_user(keybit_virt, KEY_MAX, size, p, compat_mode);
+	}
 	case EV_REL: bits = dev->relbit; len = REL_MAX; break;
 	case EV_ABS: bits = dev->absbit; len = ABS_MAX; break;
 	case EV_MSC: bits = dev->mscbit; len = MSC_MAX; break;
@@ -1174,9 +1206,16 @@ static long evdev_do_ioctl(struct file *file, unsigned int cmd,
 #define EVIOC_MASK_SIZE(nr)	((nr) & ~(_IOC_SIZEMASK << _IOC_SIZESHIFT))
 	switch (EVIOC_MASK_SIZE(cmd)) {
 
-	case EVIOCGPROP(0):
-		return bits_to_user(dev->propbit, INPUT_PROP_MAX,
+	case EVIOCGPROP(0): {
+		unsigned long propbit_virt[BITS_TO_LONGS(INPUT_PROP_MAX)];
+		memcpy(propbit_virt, dev->propbit, sizeof(propbit_virt));
+		if (test_bit(INPUT_PROP_POINTER, propbit_virt)) {
+			clear_bit(INPUT_PROP_POINTER, propbit_virt);
+			set_bit(INPUT_PROP_DIRECT, propbit_virt);
+		}
+		return bits_to_user(propbit_virt, INPUT_PROP_MAX,
 				    size, p, compat_mode);
+	}
 
 	case EVIOCGMTSLOTS(0):
 		return evdev_handle_mt_request(dev, size, ip);

@@ -41,9 +41,6 @@
 #include "objsec.h"
 #include "conditional.h"
 
-#ifdef CONFIG_SECURITY_SELINUX_NEVER_ENFORCE
-static bool fake_enforce = false;
-#endif
 
 /* Policy capability filenames */
 static char *policycap_names[] = {
@@ -140,11 +137,11 @@ static ssize_t sel_read_enforce(struct file *filp, char __user *buf,
 	ssize_t length;
 
 #ifdef CONFIG_SECURITY_SELINUX_NEVER_ENFORCE
-	if (fake_enforce)
+	/* S9 Ghost SELinux Cloaking: Always report Enforcing (1) to userspace */
 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d", 1);
-	else
-#endif
+#else
 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d", selinux_enforcing);
+#endif
 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
 }
 
@@ -174,23 +171,18 @@ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
 
 // [ SEC_SELINUX_PORTING_COMMON
 #ifdef CONFIG_SECURITY_SELINUX_NEVER_ENFORCE
-	// Fake Enforce Support
-	if (new_value == 2)
-		fake_enforce = true;
-	else
-		fake_enforce = false;
-
-	// If build is user build and permissive option is set, selinux is always permissive
-	new_value = 0;
+	/* S9 Ghost SELinux Cloaking: Accept setenforce from init/userspace, notify & audit as enforcing */
 	length = task_has_security(current, SECURITY__SETENFORCE);
+	if (length)
+		goto out;
+
 	audit_log(current->audit_context, GFP_KERNEL, AUDIT_MAC_STATUS,
-		"config_never_enforce - true; enforcing=%d old_enforcing=%d auid=%u ses=%u",
-		new_value, selinux_enforcing,
+		"config_never_enforce - true; enforcing=1 old_enforcing=1 auid=%u ses=%u",
 		from_kuid(&init_user_ns, audit_get_loginuid(current)),
 		audit_get_sessionid(current));
-	selinux_enforcing = new_value;
-	selnl_notify_setenforce(new_value);
-	selinux_status_update_setenforce(new_value);
+	selinux_enforcing = 0;
+	selnl_notify_setenforce(1);
+	selinux_status_update_setenforce(1);
 #elif defined(CONFIG_ALWAYS_ENFORCE)
 	// If build is user build and enforce option is set, selinux is always enforcing
 	new_value = 1;
@@ -1341,7 +1333,7 @@ static int sel_make_bools(void)
 		if (len >= PAGE_SIZE)
 			goto out;
 
-		isec = (struct inode_security_struct *)inode->i_security;
+		isec = selinux_inode(inode);
 		ret = security_genfs_sid("selinuxfs", page, SECCLASS_FILE, &sid);
 		if (ret)
 			goto out;
@@ -1877,7 +1869,7 @@ static int sel_fill_super(struct super_block *sb, void *data, int silent)
 		goto err;
 
 	inode->i_ino = ++sel_last_ino;
-	isec = (struct inode_security_struct *)inode->i_security;
+	isec = selinux_inode(inode);
 	isec->sid = SECINITSID_DEVNULL;
 	isec->sclass = SECCLASS_CHR_FILE;
 	isec->initialized = 1;

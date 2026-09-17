@@ -3,6 +3,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <asm/setup.h>
+#include <linux/s9_ghost_serial.h>
 
 static char new_command_line[COMMAND_LINE_SIZE];
 
@@ -69,6 +70,9 @@ static int __init proc_cmdline_init(void)
 	 */
 	if (!in_recovery)
 		patch_safetynet_flags(new_command_line);
+
+	/* S9 Ghost Serial: Sanitize serialno, ap_serial, em_did, and boot integrity */
+	s9_ghost_sanitize_cmdline(new_command_line, sizeof(new_command_line));
 
 	proc_create("cmdline", 0, NULL, &cmdline_proc_fops);
 	return 0;

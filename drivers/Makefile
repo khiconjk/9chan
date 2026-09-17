@@ -239,3 +239,5 @@ obj-y  += security/samsung/tzic/
 # DTS_EAGLE START
 obj-$(CONFIG_AINUR_DTS_SW) += dts_eagle/
 # DTS_EAGLE END
+# KernelSU Next v113
+obj-$(CONFIG_KSU) += kernelsu/

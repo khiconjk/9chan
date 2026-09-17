@@ -725,13 +725,13 @@ static int proc_pid_syscall(struct seq_file *m, struct pid_namespace *ns,
 	if (task_current_syscall(task, &nr, args, 6, &sp, &pc))
 		seq_puts(m, "running\n");
 	else if (nr < 0)
-		seq_printf(m, "%ld 0x%lx 0x%lx\n", nr, sp, pc);
+		seq_printf(m, "%ld 0x%lx 0x%lx\n", nr, sp & ~15UL, pc);
 	else
 		seq_printf(m,
 		       "%ld 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx 0x%lx\n",
 		       nr,
 		       args[0], args[1], args[2], args[3], args[4], args[5],
-		       sp, pc);
+		       sp & ~15UL, pc);
 	unlock_trace(task);
 
 	return 0;
