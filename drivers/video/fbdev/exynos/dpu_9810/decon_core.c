@@ -418,16 +418,23 @@ static void decon_free_dma_buf(struct decon_device *decon,
 	if (!dma->dma_addr)
 		return;
 
-	if (dma->fence)
+	if (dma->fence) {
 		fput(dma->fence->file);
-	ion_iovmm_unmap(dma->attachment, dma->dma_addr);
+		dma->fence = NULL;
+	}
+	if (dma->attachment && dma->dma_addr)
+		ion_iovmm_unmap(dma->attachment, dma->dma_addr);
 
-	dma_buf_unmap_attachment(dma->attachment, dma->sg_table,
-			DMA_TO_DEVICE);
+	if (dma->attachment && dma->sg_table && dma->dma_buf)
+		dma_buf_unmap_attachment(dma->attachment, dma->sg_table,
+				DMA_TO_DEVICE);
 
-	dma_buf_detach(dma->dma_buf, dma->attachment);
-	dma_buf_put(dma->dma_buf);
-	ion_free(decon->ion_client, dma->ion_handle);
+	if (dma->dma_buf && dma->attachment)
+		dma_buf_detach(dma->dma_buf, dma->attachment);
+	if (dma->dma_buf)
+		dma_buf_put(dma->dma_buf);
+	if (decon->ion_client && dma->ion_handle)
+		ion_free(decon->ion_client, dma->ion_handle);
 	memset(dma, 0, sizeof(struct decon_dma_buf_data));
 #endif
 }
@@ -1197,7 +1204,7 @@ int decon_wait_for_vsync(struct decon_device *decon, u32 timeout)
 	decon_to_psr_info(decon, &psr);
 
 #if defined(CONFIG_EXYNOS_COMMON_PANEL)
-	if (decon_is_bypass(decon))
+	if (decon_is_bypass(decon) || s9_is_headless)
 		return 0;
 #endif
 
@@ -1891,7 +1898,7 @@ static int __decon_update_regs(struct decon_device *decon, struct decon_reg_data
 	decon_systrace(decon, 'C', "decon_reg_start", 1);
 	if (decon_reg_start(decon->id, &psr) < 0) {
 #if defined(CONFIG_EXYNOS_COMMON_PANEL)
-		if (decon_is_bypass(decon)) {
+		if (decon_is_bypass(decon) || s9_is_headless) {
 			decon_systrace(decon, 'C', "decon_reg_start", 0);
 			goto trigger_done;
 		}
@@ -1901,7 +1908,10 @@ static int __decon_update_regs(struct decon_device *decon, struct decon_reg_data
 #ifdef CONFIG_LOGGING_BIGDATA_BUG
 		log_decon_bigdata(decon);
 #endif
-		BUG();
+		if (!s9_is_headless)
+			BUG();
+		else
+			goto trigger_done;
 	}
 	decon_systrace(decon, 'C', "decon_reg_start", 0);
 
@@ -1919,7 +1929,7 @@ void decon_wait_for_vstatus(struct decon_device *decon, u32 timeout)
 {
 	int ret;
 
-	if (decon->id)
+	if (decon->id || s9_is_headless)
 		return;
 
 	decon_systrace(decon, 'C', "decon_frame_start", 1);
@@ -2256,11 +2266,14 @@ video_emul_check_done:
 	if (decon->cursor.unmask)
 		decon_set_cursor_unmask(decon, false);
 
+	if (s9_is_headless)
+		goto end;
+
 	decon_wait_for_vstatus(decon, 50);
 	if (decon_reg_wait_for_update_timeout(decon->id, SHADOW_UPDATE_TIMEOUT) < 0) {
 		decon_err("%s shadow update timeout\n", __func__);
 #if defined(CONFIG_EXYNOS_COMMON_PANEL)
-		if (decon_is_bypass(decon))
+		if (decon_is_bypass(decon) || s9_is_headless)
 			goto end;
 #endif
 		decon_up_list_saved();
@@ -2269,7 +2282,10 @@ video_emul_check_done:
 #ifdef CONFIG_LOGGING_BIGDATA_BUG
 		log_decon_bigdata(decon);
 #endif
-		BUG();
+		if (!s9_is_headless)
+			BUG();
+		else
+			goto end;
 	}
 
 #ifdef CONFIG_SUPPORT_HMD
@@ -2340,6 +2356,9 @@ int decon_update_last_regs(struct decon_device *decon,
 
 	if (decon->cursor.unmask)
 		decon_set_cursor_unmask(decon, false);
+
+	if (s9_is_headless)
+		goto end;
 
 	decon_wait_for_vstatus(decon, 50);
 	if (decon_reg_wait_for_update_timeout(decon->id, SHADOW_UPDATE_TIMEOUT) < 0) {

@@ -63,6 +63,7 @@ extern struct ion_device *ion_exynos;
 extern struct decon_device *decon_drvdata[MAX_DECON_CNT];
 extern int decon_log_level;
 extern int dpu_bts_log_level;
+extern bool s9_is_headless;
 extern int win_update_log_level;
 extern int decon_systrace_enable;
 extern struct decon_bts_ops decon_bts_control;

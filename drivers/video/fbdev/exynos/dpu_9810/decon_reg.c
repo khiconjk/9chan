@@ -728,6 +728,9 @@ int decon_reg_wait_for_update_timeout(u32 id, unsigned long timeout)
 	unsigned long delay_time = 100;
 	unsigned long cnt = timeout / delay_time;
 
+	if (s9_is_headless)
+		return 0;
+
 	while (decon_read(id, SHADOW_REG_UPDATE_REQ) && --cnt)
 		udelay(delay_time);
 
@@ -745,6 +748,9 @@ int decon_reg_wait_for_window_update_timeout(u32 id, u32 win_idx,
 {
 	unsigned long delay_time = 100;
 	unsigned long cnt = timeout / delay_time;
+
+	if (s9_is_headless)
+		return 0;
 
 	while ((decon_read(id, SHADOW_REG_UPDATE_REQ) &
 				SHADOW_REG_UPDATE_REQ_WIN(win_idx)) && --cnt)
