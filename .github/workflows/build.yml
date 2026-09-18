@@ -133,8 +133,7 @@ jobs:
           export PLATFORM_VERSION="12"
           export ANDROID_MAJOR_VERSION="s"
           export CONFIG_SECTION_MISMATCH_WARN_ONLY=y
-          export KCFLAGS='-Wno-error=unknown-warning-option -Wno-unknown-warning-option -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-non-prototype'
-          export KBUILD_CFLAGS='-Wno-error=unknown-warning-option -Wno-unknown-warning-option -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-non-prototype'
+          export KCFLAGS='-Wno-error=unknown-warning-option -Wno-unknown-warning-option -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-non-prototype -DANDROID_VERSION=120000 -DANDROID_MAJOR_VERSION=s'
           export KBUILD_BUILD_USER=android-build
           export KBUILD_BUILD_HOST=google.com
           export KBUILD_BUILD_VERSION=1
@@ -162,7 +161,6 @@ jobs:
             ANDROID_MAJOR_VERSION="s"
             CONFIG_SECTION_MISMATCH_WARN_ONLY=y
             KCFLAGS="${KCFLAGS}"
-            KBUILD_CFLAGS="${KBUILD_CFLAGS}"
             KBUILD_BUILD_USER=android-build
             KBUILD_BUILD_HOST=google.com
             KBUILD_BUILD_VERSION=1

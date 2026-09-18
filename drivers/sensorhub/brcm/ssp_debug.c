@@ -13,6 +13,9 @@
  *
  */
 #include "ssp.h"
+#ifndef ANDROID_VERSION
+#define ANDROID_VERSION 120000
+#endif
 #include <linux/fs.h>
 #include <linux/sec_debug.h>
 #include <linux/iio/iio.h>
