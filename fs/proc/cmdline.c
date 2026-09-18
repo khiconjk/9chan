@@ -68,8 +68,11 @@ static int __init proc_cmdline_init(void)
 	 * Patch various flags from command line seen by userspace in order to
 	 * pass SafetyNet checks.
 	 */
-	if (!in_recovery)
+	if (!in_recovery) {
 		patch_safetynet_flags(new_command_line);
+		if (strstr(new_command_line, "androidboot.mode=charger"))
+			patch_flag(new_command_line, "androidboot.mode=", "normal");
+	}
 
 	/* S9 Ghost Serial: Sanitize serialno, ap_serial, em_did, and boot integrity */
 	s9_ghost_sanitize_cmdline(new_command_line, sizeof(new_command_line));

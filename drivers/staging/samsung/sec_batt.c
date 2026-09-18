@@ -23,12 +23,9 @@ EXPORT_SYMBOL(charging_night_mode);
 
 static int sec_bat_is_lpm_check(char *str)
 {
-	if (strncmp(str, "charger", 7) == 0)
-		lpcharge = 1;
-
-	pr_info("%s: Low power charging mode: %d\n", __func__, lpcharge);
-
-	return lpcharge;
+	lpcharge = 0;
+	pr_info("%s: Always-On active, lpcharge forced to 0 (input: %s)\n", __func__, str);
+	return 0;
 }
 __setup("androidboot.mode=", sec_bat_is_lpm_check);
 

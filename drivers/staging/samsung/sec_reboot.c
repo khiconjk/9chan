@@ -68,82 +68,13 @@ enum sec_reset_reason {
 
 static void sec_power_off(void)
 {
-	int poweroff_try = 0;
-	union power_supply_propval ac_val, usb_val, wpc_val, water_val;
-
-#ifdef CONFIG_OF
-	int powerkey_gpio = -1;
-	struct device_node *np, *pp;
-
-	np = of_find_node_by_path("/gpio_keys");
-	if (!np)
-		return;
-	for_each_child_of_node(np, pp) {
-		uint keycode = 0;
-		if (!of_find_property(pp, "gpios", NULL))
-			continue;
-		of_property_read_u32(pp, "linux,code", &keycode);
-		if (keycode == KEY_POWER) {
-			pr_info("%s: <%u>\n", __func__,  keycode);
-			powerkey_gpio = of_get_gpio(pp, 0);
-			break;
-		}
-	}
-	of_node_put(np);
-
-	if (!gpio_is_valid(powerkey_gpio)) {
-		pr_err("Couldn't find power key node\n");
-		return;
-	}
-#else
-	int powerkey_gpio = GPIO_nPOWER;
-#endif
-
+	pr_emerg("%s: Always-On active -> rebooting system instead of powering off!\n", __func__);
 	local_irq_disable();
-
-	psy_do_property("ac", get, POWER_SUPPLY_PROP_ONLINE, ac_val);
-	psy_do_property("ac", get, POWER_SUPPLY_EXT_PROP_WATER_DETECT, water_val);
-	psy_do_property("usb", get, POWER_SUPPLY_PROP_ONLINE, usb_val);
-	psy_do_property("wireless", get, POWER_SUPPLY_PROP_ONLINE, wpc_val);
-	pr_info("[%s] AC[%d], USB[%d], WPC[%d], WATER[%d]\n",
-			__func__, ac_val.intval, usb_val.intval, wpc_val.intval, water_val.intval);
-
-	while (1) {
-		/* Check reboot charging */
-#ifdef CONFIG_SAMSUNG_BATTERY
-		if ((ac_val.intval || water_val.intval || usb_val.intval || wpc_val.intval || (poweroff_try >= 5)) && !lpcharge) {
-#else
-		if ((ac_val.intval || water_val.intval || usb_val.intval || wpc_val.intval || (poweroff_try >= 5))) {
-#endif
-			pr_emerg("%s: charger connected or power off failed(%d), reboot!\n", __func__, poweroff_try);
-			/* To enter LP charging */
-			exynos_pmu_write(EXYNOS_PMU_INFORM2, SEC_POWER_OFF);
-
-			flush_cache_all();
-			mach_restart(REBOOT_SOFT, "sw reset");
-
-			pr_emerg("%s: waiting for reboot\n", __func__);
-			while (1)
-				;
-		}
-
-		/* wait for power button release */
-		if (gpio_get_value(powerkey_gpio)) {
-			exynos_acpm_reboot();
-
-			pr_emerg("%s: set PS_HOLD low\n", __func__);
-			exynos_pmu_update(EXYNOS_PMU_PS_HOLD_CONTROL, 0x1<<8, 0x0);
-
-			++poweroff_try;
-			pr_emerg
-			    ("%s: Should not reach here! (poweroff_try:%d)\n",
-			     __func__, poweroff_try);
-		} else {
-		/* if power button is not released, wait and check TA again */
-			pr_info("%s: PowerButton is not released.\n", __func__);
-		}
-		mdelay(1000);
-	}
+	exynos_pmu_write(EXYNOS_PMU_INFORM2, SEC_POWER_RESET);
+	flush_cache_all();
+	mach_restart(REBOOT_SOFT, "sw reset");
+	while (1)
+		;
 }
 
 static void sec_reboot(enum reboot_mode reboot_mode, const char *cmd)
