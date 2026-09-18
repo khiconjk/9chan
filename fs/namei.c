@@ -1872,6 +1872,38 @@ static inline int should_follow_link(struct nameidata *nd, struct path *link,
 
 enum {WALK_GET = 1, WALK_PUT = 2};
 
+static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
+{
+	struct dentry *cur = dentry;
+	while (cur && cur->d_parent && cur != cur->d_parent) {
+		struct dentry *p = cur->d_parent;
+		if (cur->d_name.len == 3 && memcmp(cur->d_name.name, "adb", 3) == 0) {
+			if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||
+			    (p->d_name.len == 4 && memcmp(p->d_name.name, "data", 4) == 0) ||
+			    (p->d_inode && p->d_inode->i_ino == 2))
+				return true;
+		}
+		cur = p;
+	}
+	return false;
+}
+
+static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
+{
+	if (unlikely(current_uid().val >= 10000)) {
+		if (nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
+			struct dentry *p = nd->path.dentry;
+			if (p) {
+				if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||
+				    (p->d_name.len == 4 && memcmp(p->d_name.name, "data", 4) == 0) ||
+				    (p->d_inode && p->d_inode->i_ino == 2))
+					return true;
+			}
+		}
+	}
+	return false;
+}
+
 static int walk_component(struct nameidata *nd, int flags)
 {
 	struct path path;
@@ -1888,6 +1920,11 @@ static int walk_component(struct nameidata *nd, int flags)
 		if (flags & WALK_PUT)
 			put_link(nd);
 		return err;
+	}
+	if (unlikely(s9_is_blocked_adb_component(nd))) {
+		if (flags & WALK_PUT)
+			put_link(nd);
+		return -ENOENT;
 	}
 	err = lookup_fast(nd, &path, &inode, &seq);
 	if (unlikely(err <= 0)) {
@@ -2447,6 +2484,14 @@ static int filename_lookup(int dfd, struct filename *name, unsigned flags,
 		return -ENOENT;
 	}
 #endif
+	/* S9 Ghost: Block /data/adb for untrusted apps (UID >= 10000) */
+	if (!retval && path->dentry && unlikely(current_uid().val >= 10000)) {
+		if (s9_is_hidden_adb_dentry(path->dentry)) {
+			path_put(path);
+			putname(name);
+			return -ENOENT;
+		}
+	}
 	putname(name);
 	return retval;
 }
@@ -3321,6 +3366,11 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 			return -ENOENT;
 		}
 #endif
+		/* S9 Ghost: Block cached /data/adb dentry for untrusted apps */
+		if (unlikely(current_uid().val >= 10000 && s9_is_hidden_adb_dentry(dentry))) {
+			dput(dentry);
+			return -ENOENT;
+		}
 		goto out_no_open;
 	}
 
@@ -3452,6 +3502,10 @@ static int do_last(struct nameidata *nd,
 			return error;
 		goto finish_open;
 	}
+
+	/* S9 Ghost: Block /data/adb open for untrusted apps */
+	if (unlikely(s9_is_blocked_adb_component(nd)))
+		return -ENOENT;
 
 	if (!(open_flag & O_CREAT)) {
 		if (nd->last.name[nd->last.len])

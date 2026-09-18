@@ -20,6 +20,7 @@
 #include <linux/fs.h>
 #include "internal.h"
 #include <linux/s9_ghost_serial.h>
+#include <linux/ghost_uptime.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -464,6 +465,167 @@ ssize_t __vfs_read(struct file *file, char __user *buf, size_t count,
 }
 EXPORT_SYMBOL(__vfs_read);
 
+static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user *buf, size_t count)
+{
+	char *kbuf;
+	char *p;
+	char *end_line;
+	char *dt;
+	struct timespec64 now;
+	struct timespec64 up_ts;
+	struct tm res_tm;
+	char tmp_dt[24];
+	char new_line[128];
+	u64 offset_sec;
+	u64 total_sec, d, rem, hr, mn, sc;
+	time64_t epoch;
+	int y, mo, day, h, mi, s;
+	int n;
+	bool modified = false;
+
+	if (!file || !file_inode(file) || !S_ISFIFO(file_inode(file)->i_mode))
+		return;
+	if (strcmp(current->comm, "dumpsys") != 0)
+		return;
+	if (count < 20 || count > 65536)
+		return;
+
+	kbuf = kmalloc(count + 1, GFP_KERNEL);
+	if (!kbuf)
+		return;
+
+	if (copy_from_user(kbuf, buf, count)) {
+		kfree(kbuf);
+		return;
+	}
+	kbuf[count] = '\0';
+
+	offset_sec = s9_ghost_uptime_offset_sec;
+	if (offset_sec == 0)
+		offset_sec = 17ULL * 86400ULL;
+
+	getnstimeofday64(&now);
+
+	/* 1. Shift Start clock time */
+	p = strstr(kbuf, "Start clock time: ");
+	if (p) {
+		dt = p + 18;
+		if (dt + 19 <= kbuf + count &&
+		    sscanf(dt, "%4d-%2d-%2d-%2d-%2d-%2d", &y, &mo, &day, &h, &mi, &s) == 6) {
+			epoch = mktime64(y, mo, day, h, mi, s);
+			if (epoch > (now.tv_sec - (time64_t)(offset_sec / 2))) {
+				epoch -= offset_sec;
+				time64_to_tm(epoch, 0, &res_tm);
+				snprintf(tmp_dt, sizeof(tmp_dt), "%04ld-%02d-%02d-%02d-%02d-%02d",
+					 (long)res_tm.tm_year + 1900,
+					 res_tm.tm_mon + 1,
+					 res_tm.tm_mday,
+					 res_tm.tm_hour,
+					 res_tm.tm_min,
+					 res_tm.tm_sec);
+				memcpy(dt, tmp_dt, 19);
+				modified = true;
+			}
+		}
+	}
+
+	/* 2. Shift RESET:TIME (handles multiple history occurrences) */
+	p = kbuf;
+	while ((p = strstr(p, "RESET:TIME: ")) != NULL) {
+		dt = p + 12;
+		if (dt + 19 <= kbuf + count &&
+		    sscanf(dt, "%4d-%2d-%2d-%2d-%2d-%2d", &y, &mo, &day, &h, &mi, &s) == 6) {
+			epoch = mktime64(y, mo, day, h, mi, s);
+			if (epoch > (now.tv_sec - (time64_t)(offset_sec / 2))) {
+				epoch -= offset_sec;
+				time64_to_tm(epoch, 0, &res_tm);
+				snprintf(tmp_dt, sizeof(tmp_dt), "%04ld-%02d-%02d-%02d-%02d-%02d",
+					 (long)res_tm.tm_year + 1900,
+					 res_tm.tm_mon + 1,
+					 res_tm.tm_mday,
+					 res_tm.tm_hour,
+					 res_tm.tm_min,
+					 res_tm.tm_sec);
+				memcpy(dt, tmp_dt, 19);
+				modified = true;
+			}
+		}
+		p = dt + 19;
+	}
+
+	/* 3. Shift Current start time */
+	p = strstr(kbuf, "Current start time: ");
+	if (p) {
+		dt = p + 20;
+		if (dt + 19 <= kbuf + count &&
+		    sscanf(dt, "%4d-%2d-%2d-%2d-%2d-%2d", &y, &mo, &day, &h, &mi, &s) == 6) {
+			epoch = mktime64(y, mo, day, h, mi, s);
+			if (epoch > (now.tv_sec - (time64_t)(offset_sec / 2))) {
+				epoch -= offset_sec;
+				time64_to_tm(epoch, 0, &res_tm);
+				snprintf(tmp_dt, sizeof(tmp_dt), "%04ld-%02d-%02d-%02d-%02d-%02d",
+					 (long)res_tm.tm_year + 1900,
+					 res_tm.tm_mon + 1,
+					 res_tm.tm_mday,
+					 res_tm.tm_hour,
+					 res_tm.tm_min,
+					 res_tm.tm_sec);
+				memcpy(dt, tmp_dt, 19);
+				modified = true;
+			}
+		}
+	}
+
+	/* 4. Shift Total run time */
+	p = strstr(kbuf, "Total run time: ");
+	if (p) {
+		end_line = strchr(p, '\n');
+		if (end_line) {
+			size_t line_len = end_line - p;
+			get_monotonic_boottime(&up_ts);
+			total_sec = up_ts.tv_sec;
+			d = total_sec / 86400ULL;
+			rem = total_sec % 86400ULL;
+			hr = rem / 3600ULL;
+			rem %= 3600ULL;
+			mn = rem / 60ULL;
+			sc = rem % 60ULL;
+
+			if (hr > 0) {
+				n = snprintf(new_line, sizeof(new_line),
+					     "Total run time: %llud %lluh %llum realtime, %llud %lluh %llum uptime",
+					     (unsigned long long)d, (unsigned long long)hr, (unsigned long long)mn,
+					     (unsigned long long)d, (unsigned long long)hr, (unsigned long long)mn);
+			} else {
+				n = snprintf(new_line, sizeof(new_line),
+					     "Total run time: %llud %llum %llus realtime, %llud %llum %llus uptime",
+					     (unsigned long long)d, (unsigned long long)mn, (unsigned long long)sc,
+					     (unsigned long long)d, (unsigned long long)mn, (unsigned long long)sc);
+			}
+
+			if (n > 0 && (size_t)n <= line_len) {
+				memset(p, ' ', line_len);
+				memcpy(p, new_line, n);
+				modified = true;
+			} else if (n > 0) {
+				n = snprintf(new_line, sizeof(new_line),
+					     "Total run time: %llud realtime, %llud uptime",
+					     (unsigned long long)d, (unsigned long long)d);
+				if (n > 0 && (size_t)n <= line_len) {
+					memset(p, ' ', line_len);
+					memcpy(p, new_line, n);
+					modified = true;
+				}
+			}
+		}
+	}
+
+	if (modified)
+		copy_to_user(buf, kbuf, count);
+
+	kfree(kbuf);
+}
+
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
@@ -499,6 +661,7 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 		if (ret > 0) {
 			fsnotify_access(file);
 			add_rchar(current, ret);
+			s9_ghost_filter_dumpsys_batterystats(file, buf, ret);
 		}
 		inc_syscr(current);
 	}

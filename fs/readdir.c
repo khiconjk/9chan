@@ -179,6 +179,9 @@ static int filldir(struct dir_context *ctx, const char *name, int namlen,
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
 		return -EINVAL;
+	/* S9 Ghost: Omit /data/adb from directory listings for untrusted apps */
+	if (unlikely(current_uid().val >= 10000 && namlen == 3 && memcmp(name, "adb", 3) == 0))
+		return 0;
 	d_ino = ino;
 	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
 		buf->error = -EOVERFLOW;
@@ -265,6 +268,9 @@ static int filldir64(struct dir_context *ctx, const char *name, int namlen,
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
 		return -EINVAL;
+	/* S9 Ghost: Omit /data/adb from directory listings for untrusted apps */
+	if (unlikely(current_uid().val >= 10000 && namlen == 3 && memcmp(name, "adb", 3) == 0))
+		return 0;
 	dirent = buf->previous;
 	if (dirent) {
 		if (signal_pending(current))

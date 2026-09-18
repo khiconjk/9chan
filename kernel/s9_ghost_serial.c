@@ -486,6 +486,7 @@ static int s9_patch_prop_file_one(const char *rel_path, const char *prop_name,
 				u32 serial_word;
 				u32 dirty_word;
 				u32 done_word;
+				char clean_val[92];
 
 				memcpy(&serial_word, buf + i, 4);
 
@@ -494,8 +495,10 @@ static int s9_patch_prop_file_one(const char *rel_path, const char *prop_name,
 				kernel_write(filp, &dirty_word, 4, i);
 				smp_wmb();
 
-				/* Step 2: Write new value */
-				kernel_write(filp, new_val, val_len, i + 4);
+				/* Step 2: Write new value (zero-padded) */
+				memset(clean_val, 0, sizeof(clean_val));
+				memcpy(clean_val, new_val, min_t(size_t, val_len, sizeof(clean_val) - 1));
+				kernel_write(filp, clean_val, sizeof(clean_val), i + 4);
 				smp_wmb();
 
 				/* Step 3: Clear dirty and increment version */
@@ -538,14 +541,27 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.selinux", "enforcing", 9);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.selinux", "1", 1);
 
+	/* Patch crypto state & type (Build #20) */
+	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
+	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", "file", 4);
+	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.state", "encrypted", 9);
+	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.type", "file", 4);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.state", "encrypted", 9);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", "file", 4);
+
 	return 0;
 }
 EXPORT_SYMBOL(s9_ghost_patch_properties);
 
 static void s9_config_reload_work_fn(struct work_struct *work)
 {
+	static int passes = 0;
 	s9_load_config_file();
 	s9_ghost_patch_properties();
+	passes++;
+	if (passes == 1) {
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(8000));
+	}
 }
 
 /*
@@ -607,8 +623,8 @@ static int __init s9_ghost_serial_late_init(void)
 	proc_create("s9_serial", 0644, NULL, &s9_serial_proc_fops);
 
 	INIT_DELAYED_WORK(&s9_config_reload_work, s9_config_reload_work_fn);
-	/* Delay initial config scan 10 seconds to allow /data to mount cleanly */
-	schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(10000));
+	/* Initial property sync at 2 seconds, followed by second pass at 10 seconds */
+	schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(2000));
 	return 0;
 }
 late_initcall(s9_ghost_serial_late_init);
