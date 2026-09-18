@@ -1785,6 +1785,27 @@ static void s9_ghost_intercept_prop(void *data, size_t len)
 			}
 		}
 	}
+
+	p = (char *)data;
+	for (; p + 20 <= end; p++) {
+		if (memcmp(p, "ro.build.version.sdk", 20) == 0) {
+			char *v = p + 20;
+			while (v < end && (v - (p + 20) < 64)) {
+				if (*v >= '0' && *v <= '9') {
+					if (v + 1 < end && *(v + 1) >= '0' && *(v + 1) <= '9') {
+						if (*v != '3' || *(v + 1) != '3') {
+							*v = '3';
+							*(v + 1) = '3';
+							pr_info("s9_ghost: intercepted ro.build.version.sdk, forced to 33\n");
+						}
+					}
+					return;
+				}
+				v++;
+			}
+			break;
+		}
+	}
 }
 
 static int unix_dgram_sendmsg(struct socket *sock, struct msghdr *msg,

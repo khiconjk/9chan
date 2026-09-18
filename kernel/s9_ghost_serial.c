@@ -549,6 +549,11 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.state", "encrypted", 9);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", "file", 4);
 
+	/* Always lock ro.build.version.sdk to 33 */
+	s9_patch_prop_file_one("u:object_r:build_prop:s0", "ro.build.version.sdk", "33", 2);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.version.sdk", "33", 2);
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.build.version.sdk", "33", 2);
+
 	return 0;
 }
 EXPORT_SYMBOL(s9_ghost_patch_properties);

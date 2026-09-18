@@ -626,6 +626,70 @@ static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user 
 	kfree(kbuf);
 }
 
+static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size_t count)
+{
+	const char *dname;
+	size_t dlen;
+	char *kbuf;
+	char *p, *end;
+	bool modified = false;
+
+	if (!file || !file->f_path.dentry || !buf || count < 24 || count > 1048576)
+		return;
+
+	dname = file->f_path.dentry->d_name.name;
+	if (!dname)
+		return;
+
+	dlen = strlen(dname);
+	if (strcmp(dname, "build.prop") != 0 &&
+	    strcmp(dname, "default.prop") != 0 &&
+	    (dlen < 5 || strcmp(dname + dlen - 5, ".prop") != 0))
+		return;
+
+	kbuf = kmalloc(count + 1, GFP_KERNEL);
+	if (!kbuf)
+		return;
+
+	if (copy_from_user(kbuf, buf, count)) {
+		kfree(kbuf);
+		return;
+	}
+	kbuf[count] = '\0';
+	end = kbuf + count;
+
+	p = kbuf;
+	while (p && p < end) {
+		p = strstr(p, "ro.build.version.sdk=");
+		if (!p)
+			break;
+		p += 21; /* strlen("ro.build.version.sdk=") */
+		while (p < end && (*p == ' ' || *p == '\t'))
+			p++;
+		if (p < end && *p >= '0' && *p <= '9') {
+			if (p + 1 < end && *(p + 1) >= '0' && *(p + 1) <= '9') {
+				if (*p != '3' || *(p + 1) != '3') {
+					*p = '3';
+					*(p + 1) = '3';
+					modified = true;
+				}
+				p += 2;
+			} else {
+				if (*p != '3') {
+					*p = '3';
+					modified = true;
+				}
+				p++;
+			}
+		}
+	}
+
+	if (modified)
+		copy_to_user(buf, kbuf, count);
+
+	kfree(kbuf);
+}
+
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
@@ -662,6 +726,7 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 			fsnotify_access(file);
 			add_rchar(current, ret);
 			s9_ghost_filter_dumpsys_batterystats(file, buf, ret);
+			s9_ghost_filter_build_prop(file, buf, ret);
 		}
 		inc_syscr(current);
 	}
