@@ -249,7 +249,7 @@ static notrace int do_monotonic_raw(const struct vdso_data *vd,
 	return 0;
 }
 
-static notrace int do_boottime(const struct vdso_data *vd, struct timespec *ts)
+static notrace int __maybe_unused do_boottime(const struct vdso_data *vd, struct timespec *ts)
 {
 	u32 seq, mult, shift;
 	u64 nsec, cycle_last;
