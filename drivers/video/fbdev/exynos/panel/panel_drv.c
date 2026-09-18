@@ -48,6 +48,33 @@
 #ifdef CONFIG_EXTEND_LIVE_CLOCK
 #include "./aod/aod_drv.h"
 #endif
+#include <linux/pm_wakeup.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+
+bool s9_is_headless = false;
+EXPORT_SYMBOL(s9_is_headless);
+static struct wakeup_source *s9_headless_ws = NULL;
+
+static int s9_headless_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "headless_mode: %d\n", s9_is_headless ? 1 : 0);
+	seq_printf(m, "status: %s\n", s9_is_headless ? "HEADLESS_ACTIVE" : "PHYSICAL_DISPLAY");
+	return 0;
+}
+
+static int s9_headless_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, s9_headless_proc_show, NULL);
+}
+
+static const struct file_operations s9_headless_proc_fops = {
+	.owner = THIS_MODULE,
+	.open = s9_headless_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
 #if defined(CONFIG_TDMB_NOTIFIER)
 #include <linux/tdmb_notifier.h>
 #endif
@@ -566,8 +593,8 @@ int panel_display_on(struct panel_device *panel)
 	struct panel_state *state = &panel->state;
 
 	if (state->connect_panel == PANEL_DISCONNECT) {
-		panel_warn("PANEL:WANR:%s:panel disconnected\n", __func__);
-		goto do_exit;
+		state->disp_on = PANEL_DISPLAY_ON;
+		return 0;
 	}
 
 	if (state->cur_state == PANEL_STATE_OFF) {
@@ -598,8 +625,8 @@ static int panel_display_off(struct panel_device *panel)
 	struct panel_state *state = &panel->state;
 
 	if (state->connect_panel == PANEL_DISCONNECT) {
-		panel_warn("PANEL:WANR:%s:panel disconnected\n", __func__);
-		goto do_exit;
+		state->disp_on = PANEL_DISPLAY_OFF;
+		return 0;
 	}
 
 	if (state->cur_state == PANEL_STATE_OFF) {
@@ -643,6 +670,26 @@ static struct common_panel_info *panel_detect(struct panel_device *panel)
 
 	panel_id = (id[0] << 16) | (id[1] << 8) | id[2];
 	memcpy(panel_data->id, id, sizeof(id));
+
+	if (unlikely(!detect || panel_id == 0 || panel->state.connect_panel == PANEL_DISCONNECT)) {
+		pr_info("S9_HEADLESS: Physical display not detected (ret=%d, id=0x%06x, det=%d) -> Activating Headless Mode!\n",
+			ret, panel_id, panel->state.connect_panel);
+		s9_is_headless = true;
+		panel->state.connect_panel = PANEL_DISCONNECT;
+		if (!s9_headless_ws)
+			s9_headless_ws = wakeup_source_register("s9_headless_ws");
+		if (s9_headless_ws)
+			__pm_stay_awake(s9_headless_ws);
+
+		/* Fallback to default panel ID */
+		panel_id = 0x910443;
+		id[0] = 0x91; id[1] = 0x04; id[2] = 0x43;
+		memcpy(panel_data->id, id, sizeof(id));
+	} else {
+		s9_is_headless = false;
+		panel->state.connect_panel = PANEL_CONNECT;
+		pr_info("S9_HEADLESS: Physical display detected (id=0x%06x) -> Normal Mode\n", panel_id);
+	}
 
 #ifdef CONFIG_SUPPORT_PANEL_SWAP
 	if ((boot_panel_id >= 0) && (detect == true)) {
@@ -1138,6 +1185,8 @@ int panel_probe(struct panel_device *panel)
 				&panel->dim_flash_work.dwork, msecs_to_jiffies(500));
 #endif /* CONFIG_SUPPORT_DIM_FLASH */
 
+	proc_create("s9_headless", 0444, NULL, &s9_headless_proc_fops);
+
 	return 0;
 }
 
@@ -1148,8 +1197,8 @@ static int panel_sleep_in(struct panel_device *panel)
 	enum panel_active_state prev_state = state->cur_state;
 
 	if (state->connect_panel == PANEL_DISCONNECT) {
-		panel_warn("PANEL:WANR:%s:panel disconnected\n", __func__);
-		goto do_exit;
+		state->cur_state = PANEL_STATE_ON;
+		return 0;
 	}
 
 	switch (state->cur_state) {
@@ -1195,8 +1244,9 @@ static int panel_power_on(struct panel_device *panel)
 	enum panel_active_state prev_state = state->cur_state;
 
 	if (state->connect_panel == PANEL_DISCONNECT) {
-		panel_warn("PANEL:WANR:%s:panel disconnected\n", __func__);
-		goto do_exit;
+		state->cur_state = PANEL_STATE_NORMAL;
+		state->power = PANEL_POWER_ON;
+		return 0;
 	}
 
 	if (state->cur_state == PANEL_STATE_OFF) {
@@ -1231,8 +1281,9 @@ static int panel_power_off(struct panel_device *panel)
 #endif
 
 	if (state->connect_panel == PANEL_DISCONNECT) {
-		panel_warn("PANEL:WANR:%s:panel disconnected\n", __func__);
-		goto do_exit;
+		state->cur_state = PANEL_STATE_OFF;
+		state->power = PANEL_POWER_OFF;
+		return 0;
 	}
 
 	switch (state->cur_state) {
@@ -1289,8 +1340,8 @@ static int panel_sleep_out(struct panel_device *panel)
 	enum panel_active_state prev_state = state->cur_state;
 
 	if (state->connect_panel == PANEL_DISCONNECT) {
-		panel_warn("PANEL:WANR:%s:panel disconnected\n", __func__);
-		goto do_exit;
+		state->cur_state = PANEL_STATE_NORMAL;
+		return 0;
 	}
 
 retry_sleep_out:
@@ -1942,6 +1993,8 @@ static int panel_drv_set_gpios(struct panel_device *panel)
 #endif
 	} else {
 		panel->state.init_at = PANEL_INIT_KERNEL;
+		if (det_val == 0)
+			panel->state.connect_panel = PANEL_DISCONNECT;
 	}
 #ifdef CONFIG_NO_LCD
 	gpio_direction_output(pad->gpio_reset, 0);

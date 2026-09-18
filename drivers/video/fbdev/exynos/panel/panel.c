@@ -1020,6 +1020,9 @@ int excute_seqtbl_nolock(struct panel_device *panel, struct seqinfo *seqtbl, int
 	struct timespec cur_ts, last_ts, delta_ts;
 	s64 elapsed_usec;
 
+	if (s9_is_headless)
+		return 0;
+
 	if (panel == NULL) {
 		panel_err("ERR:PANEL:%s:panel is null\n", __func__);
 		return -EINVAL;
@@ -1319,6 +1322,9 @@ int panel_rx_nbytes(struct panel_device *panel,
 	int ret, read_len, remained = len, index = 0;
 	static char gpara[] = {0xB0, 0x00};
 
+	if (s9_is_headless)
+		return 0;
+
 	if (panel == NULL) {
 		panel_err("PANEL:ERR:%s:panel is null\n", __func__);
 		return -EINVAL;
@@ -1583,6 +1589,9 @@ int check_panel_active(struct panel_device *panel, const char *caller)
 {
 	struct panel_state *state;
 	int dsi_state;
+
+	if (s9_is_headless)
+		return 0;
 
 	if (unlikely(!panel)) {
 		panel_err("PANEL:ERR:%s:panel is null\n", caller);

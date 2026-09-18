@@ -876,4 +876,5 @@ int panel_sysfs_probe(struct panel_device *panel);
 static inline int panel_sysfs_probe(struct panel_device *panel) { return 0; }
 #endif
 #define IS_PANEL_ACTIVE(_panel) check_panel_active(_panel, __func__)
+extern bool s9_is_headless;
 #endif /* __PANEL_H__ */
