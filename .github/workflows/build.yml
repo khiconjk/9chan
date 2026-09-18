@@ -113,7 +113,7 @@ jobs:
 
       - name: Build Kernel
         run: |
-          set -e
+          set -eo pipefail
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -133,8 +133,8 @@ jobs:
           export PLATFORM_VERSION="12"
           export ANDROID_MAJOR_VERSION="s"
           export CONFIG_SECTION_MISMATCH_WARN_ONLY=y
-          export KCFLAGS='-Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-deprecated-non-prototype'
-          export KBUILD_CFLAGS='-Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-deprecated-non-prototype'
+          export KCFLAGS='-Wno-error=unknown-warning-option -Wno-unknown-warning-option -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-non-prototype'
+          export KBUILD_CFLAGS='-Wno-error=unknown-warning-option -Wno-unknown-warning-option -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-deprecated-non-prototype'
           export KBUILD_BUILD_USER=android-build
           export KBUILD_BUILD_HOST=google.com
           export KBUILD_BUILD_VERSION=1
@@ -162,6 +162,7 @@ jobs:
             ANDROID_MAJOR_VERSION="s"
             CONFIG_SECTION_MISMATCH_WARN_ONLY=y
             KCFLAGS="${KCFLAGS}"
+            KBUILD_CFLAGS="${KBUILD_CFLAGS}"
             KBUILD_BUILD_USER=android-build
             KBUILD_BUILD_HOST=google.com
             KBUILD_BUILD_VERSION=1
@@ -197,9 +198,14 @@ jobs:
             make -j$(nproc) "${MAKE_ARGS[@]}" V=1 dtb.img 2>&1 | tee -a build.log
           fi
 
+          if [ ! -f "arch/arm64/boot/Image" ]; then
+            echo "ERROR: Kernel compilation finished but arch/arm64/boot/Image was not created!"
+            exit 1
+          fi
+
       - name: Package AnyKernel3
         run: |
-          set -e
+          set -eo pipefail
           cp -fv arch/arm64/boot/Image AnyKernel3/zImage
           cp -fv arch/arm64/boot/dtb.img AnyKernel3/dtb.img
 
@@ -217,7 +223,7 @@ jobs:
           esac
 
           cd AnyKernel3
-          zip -r9 "../${ZIP_NAME}" * -x .git README.md *placeholder
+          zip -r9 "../${ZIP_NAME}" ./* -x "*.git*" "README.md" "*placeholder*"
           cd ..
           sha256sum "${ZIP_NAME}" | tee "${ZIP_NAME}.sha256"
 
