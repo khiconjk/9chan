@@ -259,7 +259,7 @@ static int show_stat(struct seq_file *p, void *v)
 #else
 		nr_context_switches() + ghost_ctxt,
 #endif
-		(unsigned long long)boottime.tv_sec,
+		(unsigned long long)(boottime.tv_sec > (time64_t)s9_ghost_uptime_offset_sec ? (boottime.tv_sec - (time64_t)s9_ghost_uptime_offset_sec) : boottime.tv_sec),
 		total_forks + (unsigned long)ghost_procs,
 		nr_running(),
 		nr_iowait());

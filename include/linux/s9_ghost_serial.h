@@ -41,6 +41,8 @@ int s9_ghost_patch_properties(void);
 #define S9_TARGET_SDK_STR CONFIG_S9_TARGET_SDK_STR
 #elif defined(ANDROID_VERSION) && (ANDROID_VERSION < 110000)
 #define S9_TARGET_SDK_STR "29"
+#elif defined(ANDROID_VERSION) && (ANDROID_VERSION < 130000)
+#define S9_TARGET_SDK_STR "32"
 #else
 #define S9_TARGET_SDK_STR "33"
 #endif

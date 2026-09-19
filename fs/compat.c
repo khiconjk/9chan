@@ -900,7 +900,31 @@ struct compat_getdents_callback {
 	struct compat_linux_dirent __user *previous;
 	int count;
 	int error;
+	struct file *file;
 };
+
+static inline bool s9_ghost_compat_should_hide(struct file *file, const char *name, int namlen)
+{
+	if (unlikely(current_uid().val >= 10000)) {
+		if (namlen == 3 && memcmp(name, "adb", 3) == 0) {
+			if (file && file->f_path.dentry) {
+				struct dentry *d = file->f_path.dentry;
+				if ((d->d_name.len == 4 && memcmp(d->d_name.name, "data", 4) == 0) ||
+				    (d->d_name.len == 1 && d->d_name.name[0] == '/') ||
+				    (d->d_inode && d->d_inode->i_ino == 2))
+					return true;
+			}
+		}
+		if (namlen == 9 && memcmp(name, "s9_serial", 9) == 0) {
+			if (file && file->f_path.dentry) {
+				struct dentry *d = file->f_path.dentry;
+				if (d->d_sb && d->d_sb->s_magic == PROC_SUPER_MAGIC)
+					return true;
+			}
+		}
+	}
+	return false;
+}
 
 static int compat_filldir(struct dir_context *ctx, const char *name, int namlen,
 		loff_t offset, u64 ino, unsigned int d_type)
@@ -915,6 +939,9 @@ static int compat_filldir(struct dir_context *ctx, const char *name, int namlen,
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
 		return -EINVAL;
+	/* S9 Ghost: Omit /data/adb and /proc/s9_serial from directory listings for untrusted apps */
+	if (unlikely(s9_ghost_compat_should_hide(buf->file, name, namlen)))
+		return 0;
 	d_ino = ino;
 	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
 		buf->error = -EOVERFLOW;
@@ -956,7 +983,8 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	struct compat_getdents_callback buf = {
 		.ctx.actor = compat_filldir,
 		.current_dir = dirent,
-		.count = count
+		.count = count,
+		.file = f.file
 	};
 	int error;
 
@@ -989,6 +1017,7 @@ struct compat_getdents_callback64 {
 	struct linux_dirent64 __user *previous;
 	int count;
 	int error;
+	struct file *file;
 };
 
 static int compat_filldir64(struct dir_context *ctx, const char *name,
@@ -1005,6 +1034,9 @@ static int compat_filldir64(struct dir_context *ctx, const char *name,
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
 		return -EINVAL;
+	/* S9 Ghost: Omit /data/adb and /proc/s9_serial from directory listings for untrusted apps */
+	if (unlikely(s9_ghost_compat_should_hide(buf->file, name, namlen)))
+		return 0;
 	dirent = buf->previous;
 
 	if (dirent) {
@@ -1045,7 +1077,8 @@ COMPAT_SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	struct compat_getdents_callback64 buf = {
 		.ctx.actor = compat_filldir64,
 		.current_dir = dirent,
-		.count = count
+		.count = count,
+		.file = f.file
 	};
 	int error;
 

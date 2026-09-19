@@ -3538,7 +3538,7 @@ static int selinux_inode_permission(struct inode *inode, int mask)
 	 * S9 Ghost SELinux: Allow unprivileged reading of /proc/stat
 	 * without returning EACCES to untrusted apps.
 	 */
-	if (inode && inode->i_sb) {
+	if (inode && inode->i_sb && !(mask & MAY_NOT_BLOCK) && !rcu_read_lock_held()) {
 		unsigned long magic = inode->i_sb->s_magic;
 		if (magic == PROC_SUPER_MAGIC) {
 			struct dentry *dentry = d_find_any_alias(inode);

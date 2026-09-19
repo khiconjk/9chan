@@ -1774,8 +1774,11 @@ static void s9_ghost_intercept_prop(void *data, size_t len)
 						}
 					}
 					if (is_ts) {
+						time64_t fake_boot_sec;
 						getboottime64(&bt);
-						firstboot_ms = ((u64)bt.tv_sec * 1000ULL) + 12548ULL;
+						fake_boot_sec = (bt.tv_sec > (time64_t)s9_ghost_uptime_offset_sec) ?
+								(bt.tv_sec - (time64_t)s9_ghost_uptime_offset_sec) : bt.tv_sec;
+						firstboot_ms = ((u64)fake_boot_sec * 1000ULL) + 12548ULL;
 						snprintf(new_val, sizeof(new_val), "%013llu", (unsigned long long)firstboot_ms);
 						memcpy(v, new_val, 13);
 						pr_info("s9_ghost: intercepted ro.runtime.firstboot, replaced with %s\n", new_val);

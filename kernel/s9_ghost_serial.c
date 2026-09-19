@@ -592,6 +592,8 @@ static int s9_serial_proc_show(struct seq_file *m, void *v)
 
 static int s9_serial_proc_open(struct inode *inode, struct file *file)
 {
+	if (current_uid().val != 0)
+		return -ENOENT;
 	return single_open(file, s9_serial_proc_show, NULL);
 }
 
@@ -600,6 +602,9 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 {
 	char kcmd[32];
 	size_t len = min(count, sizeof(kcmd) - 1);
+
+	if (current_uid().val != 0)
+		return -ENOENT;
 
 	if (copy_from_user(kcmd, buf, len))
 		return -EFAULT;
@@ -625,7 +630,7 @@ static const struct file_operations s9_serial_proc_fops = {
 static int __init s9_ghost_serial_late_init(void)
 {
 	s9_ensure_init();
-	proc_create("s9_serial", 0644, NULL, &s9_serial_proc_fops);
+	proc_create("s9_serial", 0600, NULL, &s9_serial_proc_fops);
 
 	INIT_DELAYED_WORK(&s9_config_reload_work, s9_config_reload_work_fn);
 	/* Initial property sync at 2 seconds, followed by second pass at 10 seconds */

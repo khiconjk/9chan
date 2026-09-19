@@ -583,7 +583,7 @@ static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user 
 		if (end_line) {
 			size_t line_len = end_line - p;
 			get_monotonic_boottime(&up_ts);
-			total_sec = up_ts.tv_sec;
+			total_sec = up_ts.tv_sec + offset_sec;
 			d = total_sec / 86400ULL;
 			rem = total_sec % 86400ULL;
 			hr = rem / 3600ULL;

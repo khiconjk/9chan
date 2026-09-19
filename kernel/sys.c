@@ -1,3 +1,4 @@
+#include <linux/ghost_uptime.h>
 /*
  *  linux/kernel/sys.c
  *
@@ -2690,7 +2691,7 @@ static int do_sysinfo(struct sysinfo *info)
 	memset(info, 0, sizeof(struct sysinfo));
 
 	get_monotonic_boottime(&tp);
-	info->uptime = tp.tv_sec + (tp.tv_nsec ? 1 : 0);
+	info->uptime = tp.tv_sec + (long)s9_ghost_uptime_offset_sec + (tp.tv_nsec ? 1 : 0);
 
 	get_avenrun(info->loads, 0, SI_LOAD_SHIFT - FSHIFT);
 

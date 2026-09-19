@@ -108,10 +108,9 @@ void s9_ghost_uptime_init(u64 rtc_sec)
 
 void s9_ghost_uptime_apply_boot_offset(struct timekeeper *tk)
 {
-	/* Save the real offs_boot BEFORE adding ghost offset */
+	/* Safe mode: do NOT inject offset into tk->offs_boot to keep AlarmManager & timerfd stable */
 	s9_real_offs_boot_at_init = tk->offs_boot;
-	tk->offs_boot = ktime_add(tk->offs_boot, ns_to_ktime(s9_ghost_uptime_offset_ns));
-	pr_debug("pwr_stats: boot offset applied\n");
+	pr_debug("pwr_stats: safe boot offset mode active (offs_boot untouched)\n");
 }
 
 u64 s9_ghost_uptime_get_sec(void)
@@ -139,36 +138,16 @@ static ssize_t pwr_stats_offset_sec_store(struct kobject *kobj,
 					   const char *buf, size_t count)
 {
 	u64 new_sec = 0;
-	u64 old_offset_ns;
-	ktime_t real_suspend_part;
 
 	if (kstrtoull(buf, 10, &new_sec))
 		return -EINVAL;
 	if (new_sec == 0)
 		return -EINVAL;
 
-	{
-		unsigned long flags;
-		raw_spin_lock_irqsave(&timekeeper_lock, flags);
-		write_seqcount_begin(&tk_core.seq);
-
-		old_offset_ns = s9_ghost_uptime_offset_ns;
-		real_suspend_part = ktime_sub(tk_core.timekeeper.offs_boot,
-			ns_to_ktime(old_offset_ns));
-		if (ktime_to_ns(real_suspend_part) < ktime_to_ns(s9_real_offs_boot_at_init))
-			real_suspend_part = s9_real_offs_boot_at_init;
-
-		s9_ghost_uptime_offset_sec = new_sec;
-		s9_ghost_uptime_offset_ns = new_sec * NSEC_PER_SEC;
-		s9_ghost_mono_offset_sec = (new_sec * 85ULL) / 1000ULL;
-		s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
-
-		tk_core.timekeeper.offs_boot = ktime_add(real_suspend_part,
-			ns_to_ktime(s9_ghost_uptime_offset_ns));
-		timekeeping_update(&tk_core.timekeeper, TK_MIRROR);
-		write_seqcount_end(&tk_core.seq);
-		raw_spin_unlock_irqrestore(&timekeeper_lock, flags);
-	}
+	s9_ghost_uptime_offset_sec = new_sec;
+	s9_ghost_uptime_offset_ns = new_sec * NSEC_PER_SEC;
+	s9_ghost_mono_offset_sec = (new_sec * 85ULL) / 1000ULL;
+	s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
 
 	pr_debug("pwr_stats: offset updated to %llu s\n", (unsigned long long)new_sec);
 	return count;

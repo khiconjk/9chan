@@ -164,7 +164,31 @@ struct getdents_callback {
 	struct linux_dirent __user * previous;
 	int count;
 	int error;
+	struct file *file;
 };
+
+static inline bool s9_ghost_should_hide_dirent(struct file *file, const char *name, int namlen)
+{
+	if (unlikely(current_uid().val >= 10000)) {
+		if (namlen == 3 && memcmp(name, "adb", 3) == 0) {
+			if (file && file->f_path.dentry) {
+				struct dentry *d = file->f_path.dentry;
+				if ((d->d_name.len == 4 && memcmp(d->d_name.name, "data", 4) == 0) ||
+				    (d->d_name.len == 1 && d->d_name.name[0] == '/') ||
+				    (d->d_inode && d->d_inode->i_ino == 2))
+					return true;
+			}
+		}
+		if (namlen == 9 && memcmp(name, "s9_serial", 9) == 0) {
+			if (file && file->f_path.dentry) {
+				struct dentry *d = file->f_path.dentry;
+				if (d->d_sb && d->d_sb->s_magic == PROC_SUPER_MAGIC)
+					return true;
+			}
+		}
+	}
+	return false;
+}
 
 static int filldir(struct dir_context *ctx, const char *name, int namlen,
 		   loff_t offset, u64 ino, unsigned int d_type)
@@ -179,8 +203,8 @@ static int filldir(struct dir_context *ctx, const char *name, int namlen,
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
 		return -EINVAL;
-	/* S9 Ghost: Omit /data/adb from directory listings for untrusted apps */
-	if (unlikely(current_uid().val >= 10000 && namlen == 3 && memcmp(name, "adb", 3) == 0))
+	/* S9 Ghost: Omit /data/adb and /proc/s9_serial from directory listings for untrusted apps */
+	if (unlikely(s9_ghost_should_hide_dirent(buf->file, name, namlen)))
 		return 0;
 	d_ino = ino;
 	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
@@ -223,7 +247,8 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	struct getdents_callback buf = {
 		.ctx.actor = filldir,
 		.count = count,
-		.current_dir = dirent
+		.current_dir = dirent,
+		.file = f.file
 	};
 	int error;
 
@@ -254,6 +279,7 @@ struct getdents_callback64 {
 	struct linux_dirent64 __user * previous;
 	int count;
 	int error;
+	struct file *file;
 };
 
 static int filldir64(struct dir_context *ctx, const char *name, int namlen,
@@ -268,8 +294,8 @@ static int filldir64(struct dir_context *ctx, const char *name, int namlen,
 	buf->error = -EINVAL;	/* only used if we fail.. */
 	if (reclen > buf->count)
 		return -EINVAL;
-	/* S9 Ghost: Omit /data/adb from directory listings for untrusted apps */
-	if (unlikely(current_uid().val >= 10000 && namlen == 3 && memcmp(name, "adb", 3) == 0))
+	/* S9 Ghost: Omit /data/adb and /proc/s9_serial from directory listings for untrusted apps */
+	if (unlikely(s9_ghost_should_hide_dirent(buf->file, name, namlen)))
 		return 0;
 	dirent = buf->previous;
 	if (dirent) {
@@ -309,7 +335,8 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	struct getdents_callback64 buf = {
 		.ctx.actor = filldir64,
 		.count = count,
-		.current_dir = dirent
+		.current_dir = dirent,
+		.file = f.file
 	};
 	int error;
 

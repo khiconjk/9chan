@@ -1,12 +1,8 @@
 ss-S9 kernel build
-Device: Samsung Galaxy S9 starlte / SM-G960F or SM-G960N
-ROM target: Pixel Experience Android 13
-Kernel base: Linux 4.9
-KernelSU: KernelSU Next legacy
-SuSFS: 1.4.2-kernel-4.9
+Device: Samsung Galaxy S9 starlte / SM-G960N or SM-G960F
+ROM target: Pixel Experience Android 12
+Kernel base: Linux 4.9 (Ghost Uptime + Headless)
+KernelSU: None (VANILLA Clean Kernel)
+SuSFS: None
+Target SDK lock: 32
 Compiler: Clang with AArch64 GNU binutils
-Build jobs: 64
-Source build path: /home/khiconjk/s9-ksu-susfs-build
-Kernel commit: c7ad81c3a144
-
-The ZIP contains zImage and dtb.img for the S9 starlte target.

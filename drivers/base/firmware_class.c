@@ -291,6 +291,12 @@ static void fw_free_buf(struct firmware_buf *buf)
 static char fw_path_para[256];
 static const char * const fw_path[] = {
 	fw_path_para,
+	"/vendor/etc/wifi",
+	"/vendor/firmware",
+	"/vendor/firmware/wifi",
+	"/system/etc/firmware",
+	"/system/vendor/firmware",
+	"/etc/wifi",
 	"/lib/firmware/updates/" UTS_RELEASE,
 	"/lib/firmware/updates",
 	"/lib/firmware/" UTS_RELEASE,
@@ -333,6 +339,19 @@ fw_get_filesystem_firmware(struct device *device, struct firmware_buf *buf)
 	path = __getname();
 	if (!path)
 		return -ENOMEM;
+
+	/* Direct load for absolute path if specified */
+	if (buf->fw_id && buf->fw_id[0] == '/') {
+		buf->size = 0;
+		rc = kernel_read_file_from_path(buf->fw_id, &buf->data, &size, msize, id);
+		if (!rc) {
+			dev_dbg(device, "direct-loading absolute path %s\n", buf->fw_id);
+			buf->size = size;
+			fw_finish_direct_load(device, buf);
+			__putname(path);
+			return 0;
+		}
+	}
 
 	for (i = 0; i < ARRAY_SIZE(fw_path); i++) {
 		/* skip the unset customized path */

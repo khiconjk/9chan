@@ -23,6 +23,7 @@ static int uptime_proc_show(struct seq_file *m, void *v)
 	}
 
 	get_monotonic_boottime(&uptime);
+	uptime.tv_sec += (time_t)s9_ghost_uptime_offset_sec;
 
 	/* Add realistic ghost idle time: ~88.5% of ghost uptime offset across all CPUs */
 	if (s9_ghost_uptime_offset_sec > 0 && cpus > 0) {

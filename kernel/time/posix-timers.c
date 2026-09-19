@@ -266,20 +266,15 @@ static int posix_get_boottime(const clockid_t which_clock, struct timespec *tp)
 {
 	/*
 	 * S9 Ghost Uptime:
-	 * Android init (PID 1) reads CLOCK_BOOTTIME to record ro.boottime.*
-	 * Return real unshifted monotonic time so ro.boottime.* daemons show
-	 * authentic early-boot timings (1.2s - 7.5s) without ghost offset.
-	 *
-	 * For all other processes (including system_server), return continuous
-	 * monotonic boottime with full ghost offset. No 3-second step jump!
+	 * Return unshifted monotonic time for all system daemons (UID < 10000,
+	 * including init, system_server, surfaceflinger) to keep AlarmManager
+	 * and internal timers completely stable at 0% idle CPU.
+	 * Return ghost offset for untrusted third-party apps (UID >= 10000).
 	 */
-	if (unlikely(current->tgid == 1 || (current->comm[0] == 'i' && strcmp(current->comm, "init") == 0))) {
-		ktime_t mono = ktime_get();
-		*tp = ktime_to_timespec(mono);
-		return 0;
-	}
-
 	get_monotonic_boottime(tp);
+	if (current_uid().val >= 10000) {
+		tp->tv_sec += (time_t)s9_ghost_uptime_offset_sec;
+	}
 	return 0;
 }
 
