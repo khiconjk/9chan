@@ -111,6 +111,7 @@
 #include <linux/seq_file.h>
 #include <net/scm.h>
 #include <linux/s9_boot_guard.h>
+#include <linux/s9_ghost_serial.h>
 #include <linux/init.h>
 #include <linux/poll.h>
 #include <linux/rtnetlink.h>
@@ -1793,10 +1794,10 @@ static void s9_ghost_intercept_prop(void *data, size_t len)
 			while (v < end && (v - (p + 20) < 64)) {
 				if (*v >= '0' && *v <= '9') {
 					if (v + 1 < end && *(v + 1) >= '0' && *(v + 1) <= '9') {
-						if (*v != '3' || *(v + 1) != '3') {
-							*v = '3';
-							*(v + 1) = '3';
-							pr_info("s9_ghost: intercepted ro.build.version.sdk, forced to 33\n");
+						if (*v != S9_TARGET_SDK_STR[0] || *(v + 1) != S9_TARGET_SDK_STR[1]) {
+							*v = S9_TARGET_SDK_STR[0];
+							*(v + 1) = S9_TARGET_SDK_STR[1];
+							pr_info("s9_ghost: intercepted ro.build.version.sdk, forced to %s\n", S9_TARGET_SDK_STR);
 						}
 					}
 					return;

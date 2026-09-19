@@ -35,4 +35,15 @@ ssize_t s9_ghost_vfs_inject_string(char __user *buf, size_t count, loff_t *pos,
 				   const char *src, size_t src_len);
 int s9_ghost_patch_properties(void);
 
+
+#ifndef S9_TARGET_SDK_STR
+#if defined(CONFIG_S9_TARGET_SDK_STR)
+#define S9_TARGET_SDK_STR CONFIG_S9_TARGET_SDK_STR
+#elif defined(ANDROID_VERSION) && (ANDROID_VERSION < 110000)
+#define S9_TARGET_SDK_STR "29"
+#else
+#define S9_TARGET_SDK_STR "33"
+#endif
+#endif
+
 #endif /* _LINUX_S9_GHOST_SERIAL_H */

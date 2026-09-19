@@ -4,7 +4,7 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ss-S9 Pixel Experience Android 13 Ghost Uptime + KSU Next + SuSFS
+kernel.string=ss-S9 Samsung Stock Android 10 Q VANILLA GHOST FULL (Ghost Uptime + Headless + Always-On)
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -15,7 +15,7 @@ device.name2=starltexx
 device.name3=starlteks
 device.name4=SM-G960F
 device.name5=SM-G960N
-supported.versions=13
+supported.versions=10-13
 supported.patchlevels=
 supported.vendorpatchlevels=
 '; } # end properties

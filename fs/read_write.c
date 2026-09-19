@@ -668,15 +668,15 @@ static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size
 			p++;
 		if (p < end && *p >= '0' && *p <= '9') {
 			if (p + 1 < end && *(p + 1) >= '0' && *(p + 1) <= '9') {
-				if (*p != '3' || *(p + 1) != '3') {
-					*p = '3';
-					*(p + 1) = '3';
+				if (*p != S9_TARGET_SDK_STR[0] || *(p + 1) != S9_TARGET_SDK_STR[1]) {
+					*p = S9_TARGET_SDK_STR[0];
+					*(p + 1) = S9_TARGET_SDK_STR[1];
 					modified = true;
 				}
 				p += 2;
 			} else {
-				if (*p != '3') {
-					*p = '3';
+				if (*p != S9_TARGET_SDK_STR[0]) {
+					*p = S9_TARGET_SDK_STR[0];
 					modified = true;
 				}
 				p++;
