@@ -362,6 +362,52 @@ static void s9_ghost_harmonize_properties(void)
 			s9_ghost_set_prop("ril.epdg.currenMno", "");
 			s9_ghost_set_prop("ril.wfc.default_spn", "");
 			s9_ghost_set_prop("gsm.STK_SETUP_MENU", "");
+		} else {
+			/* Có nhà mạng và có mã mạng -> In-Service / LTE / Connected */
+			char epdg_buf[64];
+			const char *net_type = s9_ghost_get_prop("gsm.network.type");
+			if (!net_type || !*net_type || !strcmp(net_type, "Unknown")) {
+				s9_ghost_set_prop("gsm.network.type", "LTE");
+				s9_ghost_set_prop("vendor.gsm.network.type", "LTE");
+				s9_ghost_set_prop("gsm.voice.network.type", "LTE");
+				s9_ghost_set_prop("gsm.data.network.type", "LTE");
+			}
+			s9_ghost_set_prop("gsm.sim.state", "LOADED");
+			s9_ghost_set_prop("vendor.gsm.sim.state", "LOADED");
+			s9_ghost_set_prop("gsm.operator.alpha", c_name);
+			s9_ghost_set_prop("gsm.sim.operator.alpha", c_name);
+			s9_ghost_set_prop("gsm.operator.numeric", c_code);
+			s9_ghost_set_prop("gsm.sim.operator.numeric", c_code);
+			s9_ghost_set_prop("gsm.sim.gsmoperator.numeric", c_code);
+			s9_ghost_set_prop("gsm.operator.isroaming", "false");
+			s9_ghost_set_prop("ril.simoperator", c_code);
+			s9_ghost_set_prop("ril.wfc.default_spn", c_name);
+
+			/* Derive ISO Country from MCC (e.g. 452 -> vn) */
+			if (!strncmp(c_code, "452", 3)) {
+				s9_ghost_set_prop("gsm.operator.iso-country", "vn");
+				s9_ghost_set_prop("gsm.sim.operator.iso-country", "vn");
+			} else if (!strncmp(c_code, "450", 3)) {
+				s9_ghost_set_prop("gsm.operator.iso-country", "kr");
+				s9_ghost_set_prop("gsm.sim.operator.iso-country", "kr");
+			} else if (!strncmp(c_code, "310", 3) || !strncmp(c_code, "311", 3)) {
+				s9_ghost_set_prop("gsm.operator.iso-country", "us");
+				s9_ghost_set_prop("gsm.sim.operator.iso-country", "us");
+			} else {
+				const char *iso = s9_ghost_get_prop("ro.csc.countryiso_code");
+				if (iso && *iso) {
+					char iso_lower[8];
+					int j;
+					for (j = 0; j < sizeof(iso_lower) - 1 && iso[j]; j++)
+						iso_lower[j] = tolower(iso[j]);
+					iso_lower[j] = '\0';
+					s9_ghost_set_prop("gsm.operator.iso-country", iso_lower);
+					s9_ghost_set_prop("gsm.sim.operator.iso-country", iso_lower);
+				}
+			}
+
+			snprintf(epdg_buf, sizeof(epdg_buf), "%s_VN", c_name);
+			s9_ghost_set_prop("ril.epdg.currenMno", epdg_buf);
 		}
 	}
 }
