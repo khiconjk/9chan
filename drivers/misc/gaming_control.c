@@ -46,6 +46,9 @@ unsigned int max_big_freq = 2886000;
 unsigned int min_gpu_freq = 338000;
 unsigned int max_gpu_freq = 598000;
 
+int __attribute__((weak)) gpu_custom_min_clock(int gpu_min_clock) { return 0; }
+int __attribute__((weak)) gpu_custom_max_clock(int gpu_max_clock) { return 0; }
+
 char games_list[GAME_LIST_LENGTH] = {0};
 int games_pid[NUM_SUPPORTED_RUNNING_GAMES] = {
 	[0 ... (NUM_SUPPORTED_RUNNING_GAMES - 1)] = -1
