@@ -43,6 +43,33 @@ dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_b
 write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
 ## end boot install
 
+# Disable forced encryption & Samsung Knox services
+ui_print " ";
+ui_print "- Disabling forced encryption & Knox services...";
+mount -o rw /dev/block/platform/11120000.ufs/by-name/VENDOR /vendor 2>/dev/null || mount -o rw /vendor 2>/dev/null;
+if [ -d /vendor/etc ]; then
+  for f in /vendor/etc/fstab* /vendor/etc/fstab.*; do
+    if [ -f "$f" ]; then
+      ui_print "  Patching $f...";
+      sed -i 's/forceencrypt=footer/encryptable=footer/g' "$f";
+      sed -i 's/fileencryption=[^,]*/encryptable/g' "$f";
+    fi
+  done
+  for i in /vendor/etc/init/vk*.rc /vendor/etc/init/vaultkeeper* /vendor/etc/init/*wsm*; do
+    if [ -f "$i" ]; then
+      ui_print "  Disabling $i...";
+      sed -i 's/^[^#].*$/# &/' "$i";
+    fi
+  done
+  for mf in /vendor/etc/vintf/manifest.xml /vendor/etc/vintf/manifest/vaultkeeper_manifest.xml; do
+    if [ -f "$mf" ]; then
+      sed -i -e '/<hal format="hidl">/{N;/<name>vendor\.samsung.*\.security\.\(vaultkeeper\|wsm\)<\/name>/{:loop;N;/<\/hal>/!bloop;d}}' "$mf" 2>/dev/null;
+    fi
+  done
+  ui_print "  Vendor patched successfully.";
+fi
+umount /vendor 2>/dev/null;
+
 
 ## init_boot files attributes
 #init_boot_attributes() {

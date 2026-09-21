@@ -104,6 +104,19 @@ static inline int skip_magisk_entry(const char *devname)
 	return 0;
 }
 
+static const char *s9_cloak_mount_devname(const char *devname, struct mount *r)
+{
+	if (!devname)
+		return "none";
+	if (strstr(devname, "USERDATA") != NULL ||
+	    (r && r->mnt_mountpoint && !strcmp(r->mnt_mountpoint->d_name.name, "data") &&
+	     r->mnt_parent && r->mnt_parent->mnt_mountpoint &&
+	     !strcmp(r->mnt_parent->mnt_mountpoint->d_name.name, "/"))) {
+		return "/dev/block/dm-3";
+	}
+	return devname;
+}
+
 static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 {
 	struct proc_mounts *p = m->private;
@@ -125,7 +138,7 @@ static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 		err = skip_magisk_entry(r->mnt_devname);
 		if (err)
 			goto out;
-		mangle(m, r->mnt_devname ? r->mnt_devname : "none");
+		mangle(m, s9_cloak_mount_devname(r->mnt_devname, r));
 	}
 	seq_putc(m, ' ');
 	/* mountpoints outside of chroot jail will give SEQ_SKIP on this */
@@ -224,7 +237,7 @@ bypass_orig_flow:
 		if (err)
 			goto out;
 	} else {
-		mangle(m, r->mnt_devname ? r->mnt_devname : "none");
+		mangle(m, s9_cloak_mount_devname(r->mnt_devname, r));
 	}
 	seq_puts(m, sb->s_flags & MS_RDONLY ? " ro" : " rw");
 	err = show_sb_opts(m, sb);
@@ -264,7 +277,7 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 			goto out;
 		if (r->mnt_devname) {
 			seq_puts(m, "device ");
-			mangle(m, r->mnt_devname);
+			mangle(m, s9_cloak_mount_devname(r->mnt_devname, r));
 		} else
 			seq_puts(m, "no device");
 	}

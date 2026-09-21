@@ -723,6 +723,65 @@ static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size
 	kfree(kbuf);
 }
 
+static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t count, ssize_t ret, loff_t *pos)
+{
+	const char *dname;
+	char *kbuf;
+	char *p;
+	ssize_t delta = 0;
+	size_t cur_len = ret;
+
+	if (!file || !file->f_path.dentry || !buf || ret < 18 || ret >= count)
+		return 0;
+
+	/*
+	 * Whitelist: init (PID 1) and vold MUST see real unencrypted fstab
+	 * so Android mounts /data cleanly without triggering re-encryption.
+	 */
+	if (current->pid == 1 || !strcmp(current->comm, "init") || !strcmp(current->comm, "vold"))
+		return 0;
+
+	dname = file->f_path.dentry->d_name.name;
+	if (!dname || strncmp(dname, "fstab", 5) != 0)
+		return 0;
+
+	kbuf = kmalloc(count + 1, GFP_KERNEL);
+	if (!kbuf)
+		return 0;
+
+	if (copy_from_user(kbuf, buf, ret)) {
+		kfree(kbuf);
+		return 0;
+	}
+	kbuf[ret] = '\0';
+
+	p = kbuf;
+	while ((p = strstr(p, "encryptable=footer")) != NULL) {
+		size_t tail_len = strlen(p + 18);
+		if (cur_len + 1 <= count) {
+			memmove(p + 19, p + 18, tail_len + 1);
+			memcpy(p, "forceencrypt=footer", 19);
+			p += 19;
+			cur_len += 1;
+			delta += 1;
+		} else {
+			break;
+		}
+	}
+
+	if (delta > 0) {
+		if (!copy_to_user(buf, kbuf, cur_len)) {
+			if (pos)
+				*pos += delta;
+		} else {
+			delta = 0;
+		}
+	}
+
+	kfree(kbuf);
+	return delta;
+}
+
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
@@ -760,6 +819,7 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 			add_rchar(current, ret);
 			s9_ghost_filter_dumpsys_batterystats(file, buf, ret);
 			s9_ghost_filter_build_prop(file, buf, ret);
+			ret += s9_ghost_filter_fstab(file, buf, count, ret, pos);
 		}
 		inc_syscr(current);
 	}
