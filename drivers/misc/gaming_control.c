@@ -55,6 +55,16 @@ static bool always_on = 0;
 static bool battery_idle = 0;
 bool gaming_mode;
 
+int __attribute__((weak)) gpu_custom_min_clock(int gpu_min_clock)
+{
+	return 0;
+}
+
+int __attribute__((weak)) gpu_custom_max_clock(int gpu_max_clock)
+{
+	return 0;
+}
+
 static void set_gaming_mode(bool mode)
 {
 	if(always_on)
