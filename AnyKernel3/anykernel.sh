@@ -4,7 +4,7 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ss-S9 Pixel Experience Android 12 VANILLA GHOST FULL (Ghost Uptime + Headless + Always-On)
+kernel.string=Samsung Galaxy S9 (SM-G960N) Stock Kernel
 do.devicecheck=1
 do.modules=0
 do.systemless=1
