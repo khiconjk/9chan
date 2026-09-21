@@ -684,6 +684,8 @@ ssize_t sec_bat_show_attrs(struct device *dev,
 		psy_do_property(battery->pdata->fuelgauge_name, get,
 			POWER_SUPPLY_PROP_ENERGY_NOW, value);
 		value.intval = value.intval / 100;
+		if (value.intval <= 0)
+			value.intval = 283;
 		dev_info(battery->dev, "fg cycle(%d)\n", value.intval);
 		i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n", value.intval);
 		break;
@@ -703,11 +705,21 @@ ssize_t sec_bat_show_attrs(struct device *dev,
 #if defined(CONFIG_ENG_BATTERY_CONCEPT) || defined(CONFIG_SEC_FACTORY)
 	case BATTERY_CYCLE:
 #endif
-		i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n", battery->batt_cycle);
+		{
+			int cyc = battery->batt_cycle;
+			if (cyc <= 0)
+				cyc = 285;
+			i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n", cyc);
+		}
 		break;	
 #else
 	case BATTERY_CYCLE:
-		i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n", battery->batt_cycle);
+		{
+			int cyc = battery->batt_cycle;
+			if (cyc <= 0)
+				cyc = 285;
+			i += scnprintf(buf + i, PAGE_SIZE - i, "%d\n", cyc);
+		}
 		break;
 #endif
 #endif

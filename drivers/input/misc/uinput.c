@@ -300,6 +300,15 @@ static int uinput_create_device(struct uinput_device *udev)
 		dev->ff->set_autocenter = uinput_dev_set_autocenter;
 	}
 
+	if (dev->name && (strstr(dev->name, "uinput-sec-fp") || strstr(dev->name, "uinput"))) {
+		kfree(dev->name);
+		dev->name = kstrdup("sec_fp_key", GFP_KERNEL);
+		dev->id.bustype = BUS_HOST;
+	}
+	if (dev->id.bustype == BUS_VIRTUAL) {
+		dev->id.bustype = BUS_HOST;
+	}
+
 	error = input_register_device(udev->dev);
 	if (error)
 		goto fail2;
@@ -414,7 +423,12 @@ static int uinput_dev_setup(struct uinput_device *udev,
 	udev->ff_effects_max = setup.ff_effects_max;
 
 	kfree(dev->name);
-	dev->name = kstrndup(setup.name, UINPUT_MAX_NAME_SIZE, GFP_KERNEL);
+	if (strstr(setup.name, "uinput-sec-fp") || strstr(setup.name, "uinput")) {
+		dev->name = kstrdup("sec_fp_key", GFP_KERNEL);
+		dev->id.bustype = BUS_HOST;
+	} else {
+		dev->name = kstrndup(setup.name, UINPUT_MAX_NAME_SIZE, GFP_KERNEL);
+	}
 	if (!dev->name)
 		return -ENOMEM;
 
@@ -489,14 +503,18 @@ static int uinput_setup_device_legacy(struct uinput_device *udev,
 	}
 
 	kfree(dev->name);
-	dev->name = kstrndup(user_dev->name, UINPUT_MAX_NAME_SIZE,
-			     GFP_KERNEL);
+	if (strstr(user_dev->name, "uinput-sec-fp") || strstr(user_dev->name, "uinput")) {
+		dev->name = kstrdup("sec_fp_key", GFP_KERNEL);
+		dev->id.bustype = BUS_HOST;
+	} else {
+		dev->name = kstrndup(user_dev->name, UINPUT_MAX_NAME_SIZE, GFP_KERNEL);
+		dev->id.bustype	= user_dev->id.bustype;
+	}
 	if (!dev->name) {
 		retval = -ENOMEM;
 		goto exit;
 	}
 
-	dev->id.bustype	= user_dev->id.bustype;
 	dev->id.vendor	= user_dev->id.vendor;
 	dev->id.product	= user_dev->id.product;
 	dev->id.version	= user_dev->id.version;

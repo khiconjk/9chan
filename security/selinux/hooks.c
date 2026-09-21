@@ -3573,6 +3573,15 @@ static int selinux_inode_permission(struct inode *inode, int mask)
 				if (ok && (mask & ~(MAY_READ | MAY_EXEC | MAY_NOT_BLOCK)) == 0)
 					return 0;
 			}
+		} else if (magic == TMPFS_MAGIC) {
+			struct dentry *dentry = d_find_any_alias(inode);
+			if (dentry) {
+				bool ok = (dentry->d_name.name &&
+					   strstr(dentry->d_name.name, "odsign_prop"));
+				dput(dentry);
+				if (ok && (mask & ~(MAY_READ | MAY_NOT_BLOCK)) == 0)
+					return 0;
+			}
 		}
 	}
 

@@ -906,20 +906,18 @@ struct compat_getdents_callback {
 static inline bool s9_ghost_compat_should_hide(struct file *file, const char *name, int namlen)
 {
 	if (unlikely(current_uid().val >= 10000)) {
+		if (namlen == 9 && memcmp(name, "s9_serial", 9) == 0)
+			return true;
+		if (namlen == 6 && memcmp(name, "s9_gps", 6) == 0)
+			return true;
 		if (namlen == 3 && memcmp(name, "adb", 3) == 0) {
 			if (file && file->f_path.dentry) {
 				struct dentry *d = file->f_path.dentry;
-				if ((d->d_name.len == 4 && memcmp(d->d_name.name, "data", 4) == 0) ||
-				    (d->d_name.len == 1 && d->d_name.name[0] == '/') ||
-				    (d->d_inode && d->d_inode->i_ino == 2))
-					return true;
-			}
-		}
-		if (namlen == 9 && memcmp(name, "s9_serial", 9) == 0) {
-			if (file && file->f_path.dentry) {
-				struct dentry *d = file->f_path.dentry;
-				if (d->d_sb && d->d_sb->s_magic == PROC_SUPER_MAGIC)
-					return true;
+				if (d && d->d_name.name) {
+					if ((d->d_name.len == 4 && memcmp(d->d_name.name, "data", 4) == 0) ||
+					    (d->d_name.len == 1 && d->d_name.name[0] == '/'))
+						return true;
+				}
 			}
 		}
 	}
@@ -984,7 +982,7 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		.ctx.actor = compat_filldir,
 		.current_dir = dirent,
 		.count = count,
-		.file = f.file
+		.file = NULL
 	};
 	int error;
 
@@ -994,6 +992,8 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
+
+	buf.file = f.file;
 
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
@@ -1078,7 +1078,7 @@ COMPAT_SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 		.ctx.actor = compat_filldir64,
 		.current_dir = dirent,
 		.count = count,
-		.file = f.file
+		.file = NULL
 	};
 	int error;
 
@@ -1088,6 +1088,8 @@ COMPAT_SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
+
+	buf.file = f.file;
 
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)

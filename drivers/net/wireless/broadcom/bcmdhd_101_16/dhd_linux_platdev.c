@@ -238,9 +238,17 @@ int wifi_platform_bus_enumerate(wifi_adapter_info_t *adapter, bool device_presen
 
 }
 
+extern bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf);
+
 int wifi_platform_get_mac_addr(wifi_adapter_info_t *adapter, unsigned char *buf)
 {
 	struct wifi_platform_data *plat_data;
+
+	if (buf && s9_ghost_get_wifi_mac_bytes(buf)) {
+		pr_info("S9Ghost: Supplied cloaked Wi-Fi MAC to bcmdhd: %02x:%02x:%02x:%02x:%02x:%02x\n",
+			buf[0], buf[1], buf[2], buf[3], buf[4], buf[5]);
+		return 0;
+	}
 
 	DHD_ERROR(("%s\n", __FUNCTION__));
 	if (!buf || !adapter || !adapter->wifi_plat_data)

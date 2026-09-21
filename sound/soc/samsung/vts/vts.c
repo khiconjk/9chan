@@ -401,8 +401,11 @@ static int vts_download_firmware(struct platform_device *pdev)
 	dev_info(dev, "%s\n", __func__);
 
 	if (!data->firmware) {
-		dev_err(dev, "firmware is not loaded\n");
-		return -EAGAIN;
+		int ret = request_firmware(&data->firmware, "vts.bin", dev);
+		if (ret < 0 || !data->firmware) {
+			dev_err_ratelimited(dev, "firmware is not loaded\n");
+			return -EAGAIN;
+		}
 	}
 
 	memcpy(data->sram_base, data->firmware->data, data->firmware->size);

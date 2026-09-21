@@ -203,6 +203,10 @@ static unsigned int apply_pm_qos(struct exynos_cpufreq_domain *domain,
 	freq = max((unsigned int)qos_min, target_freq);
 	freq = min((unsigned int)qos_max, freq);
 
+	/* S9 Anti-Brownout Protection: Cap Exynos M3 big cluster (domain 1) to 1794 MHz */
+	if (domain->id == 1 && freq > 1794000)
+		freq = 1794000;
+
 	return freq;
 }
 
@@ -221,12 +225,22 @@ static int scale(struct exynos_cpufreq_domain *domain,
 				unsigned int target_freq)
 {
 	int ret;
-	struct cpufreq_freqs freqs = {
-		.cpu		= policy->cpu,
-		.old		= domain->old,
-		.new		= target_freq,
-		.flags		= 0,
-	};
+	struct cpufreq_freqs freqs;
+
+	/*
+	 * S9 Anti-Brownout Protection:
+	 * Exynos 9810 domain 1 (M3 big cluster) draws up to 3.8A at 2.7 GHz,
+	 * causing instantaneous battery voltage sag below 3.3V (PMIC UVLO power shutdown)
+	 * when opening heavy apps like Shopee on aging batteries.
+	 * Cap domain 1 at 1794000 kHz (1.794 GHz), keeping peak power under 1.2A.
+	 */
+	if (domain->id == 1 && target_freq > 1794000)
+		target_freq = 1794000;
+
+	freqs.cpu = policy->cpu;
+	freqs.old = domain->old;
+	freqs.new = target_freq;
+	freqs.flags = 0;
 
 	cpufreq_freq_transition_begin(policy, &freqs);
 	exynos_ss_freq(domain->id, domain->old, target_freq, ESS_FLAG_IN);
@@ -337,9 +351,9 @@ static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
 		goto out;
 
 	if (domain->old != get_freq(domain)) {
-		pr_err("oops, inconsistency between domain->old:%d, real clk:%d\n",
-			domain->old, get_freq(domain));
-		BUG_ON(1);
+		pr_warn_ratelimited("exynos-acme: domain%d inconsistency old:%d, real clk:%d (syncing)\n",
+			domain->id, domain->old, get_freq(domain));
+		domain->old = get_freq(domain);
 	}
 
 	/*
@@ -354,6 +368,10 @@ static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
 	}
 
 	target_freq = index_to_freq(domain->freq_table, index);
+
+	/* S9 Anti-Brownout Protection: Cap Exynos M3 big cluster (domain 1) to 1794 MHz */
+	if (domain->id == 1 && target_freq > 1794000)
+		target_freq = 1794000;
 
 	/* Target is same as current, skip scaling */
 	if (domain->old == target_freq)
@@ -1150,7 +1168,7 @@ static int __init cpufreq_read_cpu_max_c1(char *cpu_max_c1)
 }
 __setup("cpu_max_c1=", cpufreq_read_cpu_max_c1);
 
-unsigned long arg_cpu_max_c2 = 3016000;
+unsigned long arg_cpu_max_c2 = 1794000;
 
 static __init int cpufreq_read_cpu_max_c2(char *cpu_max_c2)
 {

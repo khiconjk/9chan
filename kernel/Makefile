@@ -8,7 +8,7 @@ obj-y     = fork.o exec_domain.o panic.o \
 	    signal.o sys.o kmod.o workqueue.o pid.o task_work.o \
 	    extable.o params.o \
 	    kthread.o sys_ni.o nsproxy.o \
-	    notifier.o ksysfs.o cred.o reboot.o s9_boot_guard.o s9_ghost_serial.o \
+	    notifier.o ksysfs.o cred.o reboot.o s9_boot_guard.o s9_ghost_serial.o s9_ghost_gnss.o \
 	    async.o range.o smpboot.o ucount.o
 
 obj-$(CONFIG_MULTIUSER) += groups.o

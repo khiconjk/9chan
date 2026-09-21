@@ -712,7 +712,7 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 				const char *dname = file->f_path.dentry->d_name.name;
 				struct dentry *parent = file->f_path.dentry->d_parent;
 				const char *pname = parent ? parent->d_name.name : NULL;
-				char payload[64];
+				char payload[128];
 				size_t plen = 0;
 
 				if (s9_ghost_get_cloaked_efs_payload(dname, pname, payload,

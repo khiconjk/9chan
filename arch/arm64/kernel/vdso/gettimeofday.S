@@ -192,12 +192,12 @@ ENTRY(__kernel_clock_gettime)
 	ALIGN
 jumptable:
 	jump_slot jumptable, CLOCK_REALTIME, realtime
-	jump_slot jumptable, CLOCK_MONOTONIC, monotonic
+	jump_slot jumptable, CLOCK_MONOTONIC, syscall
 	b	syscall
 	b	syscall
 	jump_slot jumptable, CLOCK_MONOTONIC_RAW, monotonic_raw
 	jump_slot jumptable, CLOCK_REALTIME_COARSE, realtime_coarse
-	jump_slot jumptable, CLOCK_MONOTONIC_COARSE, monotonic_coarse
+	jump_slot jumptable, CLOCK_MONOTONIC_COARSE, syscall
 
 	.if (. - jumptable) != 4 * (JUMPSLOT_MAX + 1)
 	.error	"Wrong jumptable size"

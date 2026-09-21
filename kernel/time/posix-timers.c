@@ -52,6 +52,7 @@
 
 #include "timekeeping.h"
 #include <linux/ghost_uptime.h>
+#include <linux/s9_boot_guard.h>
 
 /*
  * Management arrays for POSIX timers. Timers are now kept in static hash table
@@ -224,6 +225,52 @@ static int posix_clock_realtime_adj(const clockid_t which_clock,
 	return do_adjtimex(t);
 }
 
+static inline bool s9_is_system_server(void)
+{
+	struct task_struct *leader = current->group_leader;
+	if (!leader)
+		leader = current;
+	return (leader->comm[0] == 's' && strcmp(leader->comm, "system_server") == 0);
+}
+
+static inline bool s9_is_init(void)
+{
+	if (current->tgid == 1)
+		return true;
+	if (current->comm[0] == 'i' && strcmp(current->comm, "init") == 0)
+		return true;
+	return false;
+}
+
+static inline bool s9_is_settings_app(void)
+{
+	struct task_struct *leader;
+
+	/*
+	 * Do not spoof monotonic clock during early boot (sys.boot_completed == 0).
+	 * This allows FallbackHome to finish and pass userActivity() cleanly without
+	 * triggering "IllegalArgumentException: event time must not be in the future"
+	 * in system_server, eliminating Settings crash dialogs and USB mode failure.
+	 */
+	if (!s9_boot_completed)
+		return false;
+
+	if (current_uid().val != 1000)
+		return false;
+
+	leader = current->group_leader;
+	if (!leader)
+		leader = current;
+
+	if (strncmp(leader->comm, "com.android.set", 15) == 0 ||
+	    strncmp(leader->comm, "android.setting", 15) == 0 ||
+	    strstr(leader->comm, "setting") != NULL ||
+	    strstr(leader->comm, "Setting") != NULL)
+		return true;
+
+	return false;
+}
+
 /*
  * Get monotonic time for posix timers
  */
@@ -266,15 +313,19 @@ static int posix_get_boottime(const clockid_t which_clock, struct timespec *tp)
 {
 	/*
 	 * S9 Ghost Uptime:
-	 * Return unshifted monotonic time for all system daemons (UID < 10000,
-	 * including init, system_server, surfaceflinger) to keep AlarmManager
-	 * and internal timers completely stable at 0% idle CPU.
-	 * Return ghost offset for untrusted third-party apps (UID >= 10000).
+	 * Protect init (tgid 1) so ro.boottime.* reflects true early-boot duration.
+	 * Protect system_server (and all its worker threads, e.g. AlarmManager)
+	 * so timerfd ABSTIME alarms match the hardware timer wheel, eliminating
+	 * infinite alarm wake loops and battery overheating.
+	 *
+	 * All other processes (Settings app UI, SystemUI, Shell, third-party apps)
+	 * receive the full ghost boottime offset.
 	 */
 	get_monotonic_boottime(tp);
-	if (current_uid().val >= 10000) {
-		tp->tv_sec += (time_t)s9_ghost_uptime_offset_sec;
-	}
+	if (unlikely(s9_is_init() || s9_is_system_server()))
+		return 0;
+
+	tp->tv_sec += (time_t)s9_ghost_uptime_offset_sec;
 	return 0;
 }
 

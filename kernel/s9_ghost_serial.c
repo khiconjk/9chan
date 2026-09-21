@@ -1,17 +1,18 @@
 /*
- * Samsung Galaxy S9 (SM-G960F / starlte)
- * 100% Kernel-Space Serial Number Virtualization & Identity Cloaking
+ * Samsung Galaxy S9 (SM-G960F / SM-G960N / starlte)
+ * 100% Kernel-Space Serial Number & Device Profile Virtualization Engine
  *
  * Provides pure in-memory virtualization for:
- * - androidboot.serialno, ap_serial, em_did in /proc/cmdline & bootargs
- * - /proc/device-tree/chosen/bootargs & devicetree sysfs (via of_node_property_read)
- * - Knox Warranty & AVB state: warranty_bit=0, snapQB=OFFICIAL, wb.hs=0000,
- *   sec_debug.bin=O, odin_download=0, verifiedbootstate=green, flash.locked=1
+ * - Dynamic Profile Ingestion: reads 58 fields from /efs/ghost.conf at boot
+ * - Live Android property memory sync (/dev/__properties__ across all contexts)
+ * - Hardware Identifiers: serialno, ap_serial, em_did in /proc/cmdline & bootargs
  * - Silicon Exynos ChipID (unique_id, lot_id, lot_id2, SVC_AP, sec_hw_param)
- * - USB Gadget iSerialNumber descriptor (PC host ADB)
- * - /efs/FactoryApp/serial_no in-flight VFS cloaking (Zero EFS disk mutation)
- * - Live Android property memory sync (/dev/__properties__)
- * - Dynamic config file support (/data/adb/ghost.conf or /efs/ghost.conf)
+ * - Knox Warranty & AVB state: warranty_bit=0, snapQB=0, wb.hs=0000,
+ *   sec_debug.bin=O, odin_download=0, verifiedbootstate=green, flash.locked=1
+ * - VFS Cloaking: /efs/FactoryApp (serial_no, ap_serial, em_did, samsung_serial, imei, imsi, meid)
+ * - VFS Cloaking: /efs/imei/imei.dat, /efs/wifi/.mac.info, /efs/bluetooth/bt_addr
+ * - Wi-Fi Driver MAC Cloaking: direct hardware spoofing via bcmdhd
+ * - Non-Root / VANILLA clean execution with Zero EFS disk mutation
  */
 
 #include <linux/init.h>
@@ -36,11 +37,55 @@
 
 #define S9_PROP_AREA_SIZE   131072
 #define S9_PROP_HEADER_SIZE 128
+#define S9_MAX_GHOST_PROPS  128
+#define S9_PROP_KEY_LEN     64
+#define S9_PROP_VAL_LEN     128
+
+struct s9_ghost_prop {
+	char key[S9_PROP_KEY_LEN];
+	char val[S9_PROP_VAL_LEN];
+};
 
 static struct s9_serial_profile s9_active_serial_prof;
+static struct s9_ghost_prop s9_ghost_props[S9_MAX_GHOST_PROPS];
+static int s9_ghost_prop_count = 0;
 static DEFINE_SPINLOCK(s9_serial_lock);
 static struct super_block *s9_efs_sb = NULL;
 static struct delayed_work s9_config_reload_work;
+
+static const char *const s9_prop_contexts[] = {
+	"u:object_r:default_prop:s0",
+	"u:object_r:build_prop:s0",
+	"u:object_r:system_prop:s0",
+	"u:object_r:system_product_prop:s0",
+	"u:object_r:vendor_prop:s0",
+	"u:object_r:odm_prop:s0",
+	"u:object_r:telephony_prop:s0",
+	"u:object_r:radio_prop:s0",
+	"u:object_r:exported_radio_prop:s0",
+	"u:object_r:exported_system_prop:s0",
+	"u:object_r:exported_default_prop:s0",
+	"u:object_r:exported2_default_prop:s0",
+	"u:object_r:exported3_default_prop:s0",
+	"u:object_r:serialno_prop:s0",
+	"u:object_r:ril_serialno_prop:s0",
+	"u:object_r:security_prop:s0",
+	"u:object_r:vendor_default_prop:s0",
+	"u:object_r:vendor_radio_prop:s0",
+	"u:object_r:system_radio_prop:s0",
+	"u:object_r:vendor_rild_prop:s0",
+	"u:object_r:exported_config_prop:s0",
+	"u:object_r:odsign_prop:s0",
+	"u:object_r:vold_prop:s0",
+	"u:object_r:vold_status_prop:s0",
+	"u:object_r:setupwizard_prop:s0",
+	"u:object_r:fingerprint_prop:s0",
+	"u:object_r:bluetooth_prop:s0",
+	"u:object_r:sec_bluetooth_prop:s0",
+	"u:object_r:wifi_prop:s0",
+	"u:object_r:exported_wifi_prop:s0",
+	NULL
+};
 
 static u64 s9_mix64(u64 v, u64 salt)
 {
@@ -116,10 +161,8 @@ static void s9_generate_deterministic_profile(struct s9_serial_profile *p)
 
 	/* 2. 12-hex AP Serial: 0x0... */
 	ap_val = (seed2 & 0x0000FFFFFFFFFFFFULL);
-	/* Force top nibble 0 to match S9 standard 0x0AB4... format */
 	ap_val &= 0x0FFFFFFFFFFFULL;
 	snprintf(ap_hex, sizeof(ap_hex), "%012llX", (unsigned long long)ap_val);
-
 	snprintf(p->ap_serial, sizeof(p->ap_serial), "0x%s", ap_hex);
 
 	/* 3. EM DID: 20 + lowercase ap_hex + 11 */
@@ -152,12 +195,168 @@ static void s9_generate_deterministic_profile(struct s9_serial_profile *p)
 	p->active = true;
 }
 
+static void s9_ghost_set_prop(const char *key, const char *val)
+{
+	int i;
+	if (!key || !*key || !val)
+		return;
+
+	for (i = 0; i < s9_ghost_prop_count; i++) {
+		if (!strcmp(s9_ghost_props[i].key, key)) {
+			strlcpy(s9_ghost_props[i].val, val, sizeof(s9_ghost_props[i].val));
+			return;
+		}
+	}
+
+	if (s9_ghost_prop_count < S9_MAX_GHOST_PROPS) {
+		strlcpy(s9_ghost_props[s9_ghost_prop_count].key, key, sizeof(s9_ghost_props[s9_ghost_prop_count].key));
+		strlcpy(s9_ghost_props[s9_ghost_prop_count].val, val, sizeof(s9_ghost_props[s9_ghost_prop_count].val));
+		s9_ghost_prop_count++;
+	}
+}
+
+static const char *s9_ghost_get_prop(const char *key)
+{
+	int i;
+	if (!key || !*key)
+		return NULL;
+	for (i = 0; i < s9_ghost_prop_count; i++) {
+		if (!strcmp(s9_ghost_props[i].key, key))
+			return s9_ghost_props[i].val;
+	}
+	return NULL;
+}
+
+static void s9_ghost_harmonize_properties(void)
+{
+	const char *model = s9_ghost_get_prop("ro.product.model");
+	const char *device = s9_ghost_get_prop("ro.product.device");
+	const char *name = s9_ghost_get_prop("ro.product.name");
+	const char *brand = s9_ghost_get_prop("ro.product.brand");
+	const char *mfg = s9_ghost_get_prop("ro.product.manufacturer");
+	const char *fp = s9_ghost_get_prop("ro.build.fingerprint");
+	const char *inc = s9_ghost_get_prop("ro.build.version.incremental");
+	const char *sales_code = s9_ghost_get_prop("ro.csc.sales_code");
+
+	/* 1. Model harmonization across system, vendor, odm, boot */
+	if (model && *model) {
+		char selinux_buf[64];
+		s9_ghost_set_prop("ro.product.system.model", model);
+		s9_ghost_set_prop("ro.product.vendor.model", model);
+		s9_ghost_set_prop("ro.product.odm.model", model);
+		s9_ghost_set_prop("ro.product.system_ext.model", model);
+		s9_ghost_set_prop("ro.boot.em.model", model);
+
+		/* SELinux policy version: SEPF_<MODEL>_10_0030 */
+		snprintf(selinux_buf, sizeof(selinux_buf), "SEPF_%s_10_0030", model);
+		s9_ghost_set_prop("selinux.policy_version", selinux_buf);
+
+		/* RIL product code: <MODEL>ZRA<SALES_CODE> (default XXV) */
+		{
+			char prod_code[64];
+			const char *sc = (sales_code && *sales_code) ? sales_code : "XXV";
+			snprintf(prod_code, sizeof(prod_code), "%sZRA%s", model, sc);
+			s9_ghost_set_prop("ril.product_code", prod_code);
+			s9_ghost_set_prop("vendor.ril.product_code", prod_code);
+		}
+
+		/* Baseband and CSC version harmonization */
+		{
+			const char *raw_model = model;
+			if (!strncmp(raw_model, "SM-", 3))
+				raw_model += 3;
+			if (strlen(raw_model) >= 4) {
+				char csc_buf[64];
+				char bb_buf[64];
+				snprintf(csc_buf, sizeof(csc_buf), "%sOKR5FVG2", raw_model);
+				s9_ghost_set_prop("ril.official_cscver", csc_buf);
+				s9_ghost_set_prop("ro.omc.build.version", csc_buf);
+
+				snprintf(bb_buf, sizeof(bb_buf), "%sKOU5FVA1", raw_model);
+				s9_ghost_set_prop("gsm.version.baseband", bb_buf);
+				s9_ghost_set_prop("ril.sw_ver", bb_buf);
+			}
+		}
+	}
+
+	/* 2. Device harmonization across system, vendor, odm */
+	if (device && *device) {
+		s9_ghost_set_prop("ro.product.system.device", device);
+		s9_ghost_set_prop("ro.product.vendor.device", device);
+		s9_ghost_set_prop("ro.product.odm.device", device);
+		s9_ghost_set_prop("ro.product.system_ext.device", device);
+	}
+
+	/* 3. Name / Product name harmonization */
+	if (name && *name) {
+		s9_ghost_set_prop("ro.product.system.name", name);
+		s9_ghost_set_prop("ro.product.vendor.name", name);
+		s9_ghost_set_prop("ro.product.odm.name", name);
+		s9_ghost_set_prop("ro.product.system_ext.name", name);
+	}
+
+	/* 4. Brand & Manufacturer harmonization */
+	if (brand && *brand) {
+		s9_ghost_set_prop("ro.product.system.brand", brand);
+		s9_ghost_set_prop("ro.product.vendor.brand", brand);
+		s9_ghost_set_prop("ro.product.odm.brand", brand);
+		s9_ghost_set_prop("ro.product.system_ext.brand", brand);
+	}
+	if (mfg && *mfg) {
+		s9_ghost_set_prop("ro.product.system.manufacturer", mfg);
+		s9_ghost_set_prop("ro.product.vendor.manufacturer", mfg);
+		s9_ghost_set_prop("ro.product.odm.manufacturer", mfg);
+	}
+
+	/* 5. Build Fingerprint harmonization */
+	if (fp && *fp) {
+		s9_ghost_set_prop("ro.system.build.fingerprint", fp);
+		s9_ghost_set_prop("ro.vendor.build.fingerprint", fp);
+		s9_ghost_set_prop("ro.bootimage.build.fingerprint", fp);
+		s9_ghost_set_prop("ro.odm.build.fingerprint", fp);
+		s9_ghost_set_prop("ro.system_ext.build.fingerprint", fp);
+	}
+
+	/* 6. Incremental & PDA / Bootloader harmonization */
+	if (inc && *inc) {
+		s9_ghost_set_prop("ro.system.build.version.incremental", inc);
+		s9_ghost_set_prop("ro.vendor.build.version.incremental", inc);
+		s9_ghost_set_prop("ro.bootloader", inc);
+		s9_ghost_set_prop("ro.boot.bootloader", inc);
+		s9_ghost_set_prop("ro.build.PDA", inc);
+	}
+
+	/* 7. Hardware Serials in boot & ril */
+	if (s9_active_serial_prof.ap_serial[0])
+		s9_ghost_set_prop("ro.boot.ap_serial", s9_active_serial_prof.ap_serial);
+	if (s9_active_serial_prof.em_did[0])
+		s9_ghost_set_prop("ro.boot.em.did", s9_active_serial_prof.em_did);
+	if (s9_active_serial_prof.samsung_serial[0])
+		s9_ghost_set_prop("ril.serialnumber", s9_active_serial_prof.samsung_serial);
+}
+
+static bool s9_parse_mac_address(const char *str, u8 *bytes)
+{
+	int values[6];
+	int i;
+
+	if (sscanf(str, "%x:%x:%x:%x:%x:%x",
+		   &values[0], &values[1], &values[2],
+		   &values[3], &values[4], &values[5]) == 6) {
+		for (i = 0; i < 6; i++)
+			bytes[i] = (u8)values[i];
+		return true;
+	}
+	return false;
+}
+
 static void s9_load_config_file(void)
 {
 	static const char *const conf_paths[] = {
+		"/mnt/vendor/efs/ghost.conf",
+		"/efs/ghost.conf",
 		"/data/adb/ghost.conf",
 		"/data/ghost.conf",
-		"/efs/ghost.conf",
 		NULL
 	};
 	struct file *filp;
@@ -165,7 +364,7 @@ static void s9_load_config_file(void)
 	ssize_t bytes;
 	int p_idx;
 
-	kbuf = kmalloc(4096, GFP_KERNEL);
+	kbuf = kmalloc(16384, GFP_KERNEL);
 	if (!kbuf)
 		return;
 
@@ -174,7 +373,7 @@ static void s9_load_config_file(void)
 		if (IS_ERR(filp))
 			continue;
 
-		bytes = kernel_read(filp, 0, kbuf, 4095);
+		bytes = kernel_read(filp, 0, kbuf, 16383);
 		filp_close(filp, NULL);
 
 		if (bytes > 0) {
@@ -215,9 +414,13 @@ static void s9_load_config_file(void)
 							*(--v_end) = '\0';
 					}
 
-					if ((!strcasecmp(key, "serialno") || !strcasecmp(key, "serial_no")) && strlen(val) >= 8) {
+					/* 1. Hardware & Serial Identifiers */
+					if ((!strcasecmp(key, "serialno") || !strcasecmp(key, "serial_no") ||
+					     !strcasecmp(key, "efs.serial_no") || !strcasecmp(key, "efs.serialno")) && strlen(val) >= 4) {
 						strlcpy(s9_active_serial_prof.serialno, val, sizeof(s9_active_serial_prof.serialno));
-					} else if (!strcasecmp(key, "ap_serial") && strlen(val) >= 10) {
+						s9_ghost_set_prop("ro.serialno", val);
+						s9_ghost_set_prop("ro.boot.serialno", val);
+					} else if ((!strcasecmp(key, "ap_serial") || !strcasecmp(key, "efs.ap_serial")) && strlen(val) >= 10) {
 						u64 num = 0;
 						const char *hex_str = val;
 						if (hex_str[0] == '0' && (hex_str[1] == 'x' || hex_str[1] == 'X'))
@@ -225,24 +428,54 @@ static void s9_load_config_file(void)
 						if (!kstrtoull(hex_str, 16, &num)) {
 							strlcpy(s9_active_serial_prof.ap_serial, val, sizeof(s9_active_serial_prof.ap_serial));
 							s9_derive_chipid_from_ap(&s9_active_serial_prof, num);
-							/* Synchronize with exynos_soc_info */
 							exynos_soc_info.unique_id = s9_active_serial_prof.unique_id;
 							exynos_soc_info.lot_id = s9_active_serial_prof.lot_id;
 							strlcpy(exynos_soc_info.lot_id2, s9_active_serial_prof.lot_id2, 6);
+							s9_ghost_set_prop("ro.boot.ap_serial", val);
 						}
-					} else if (!strcasecmp(key, "em_did") && strlen(val) >= 14) {
+					} else if ((!strcasecmp(key, "em_did") || !strcasecmp(key, "efs.em_did")) && strlen(val) >= 14) {
 						strlcpy(s9_active_serial_prof.em_did, val, sizeof(s9_active_serial_prof.em_did));
-					} else if (!strcasecmp(key, "samsung_serial") && strlen(val) >= 8) {
+						s9_ghost_set_prop("ro.boot.em.did", val);
+					} else if ((!strcasecmp(key, "samsung_serial") || !strcasecmp(key, "efs.samsung_serial")) && strlen(val) >= 8) {
 						strlcpy(s9_active_serial_prof.samsung_serial, val, sizeof(s9_active_serial_prof.samsung_serial));
 						snprintf(s9_active_serial_prof.efs_serial_line, sizeof(s9_active_serial_prof.efs_serial_line),
 							 "%s,20180517,AGZ0797860\n", s9_active_serial_prof.samsung_serial);
+						s9_ghost_set_prop("ril.serialnumber", val);
+					} else if ((!strcasecmp(key, "imei") || !strcasecmp(key, "efs.imei")) && strlen(val) >= 14) {
+						strlcpy(s9_active_serial_prof.imei, val, sizeof(s9_active_serial_prof.imei));
+					} else if ((!strcasecmp(key, "imsi") || !strcasecmp(key, "efs.imsi")) && strlen(val) >= 10) {
+						strlcpy(s9_active_serial_prof.imsi, val, sizeof(s9_active_serial_prof.imsi));
+					} else if ((!strcasecmp(key, "meid") || !strcasecmp(key, "efs.meid")) && strlen(val) >= 12) {
+						strlcpy(s9_active_serial_prof.meid, val, sizeof(s9_active_serial_prof.meid));
+					} else if (!strcasecmp(key, "wifi_mac") || !strcasecmp(key, "wifi.mac") || !strcasecmp(key, "wlan.mac")) {
+						strlcpy(s9_active_serial_prof.wifi_mac_str, val, sizeof(s9_active_serial_prof.wifi_mac_str));
+						if (s9_parse_mac_address(val, s9_active_serial_prof.wifi_mac_bytes))
+							s9_active_serial_prof.has_wifi_mac = true;
+					} else if (!strcasecmp(key, "bt_mac") || !strcasecmp(key, "bluetooth_mac") || !strcasecmp(key, "bt.mac")) {
+						strlcpy(s9_active_serial_prof.bt_mac_str, val, sizeof(s9_active_serial_prof.bt_mac_str));
+						s9_active_serial_prof.has_bt_mac = true;
+					} else if (!strcasecmp(key, "ghost_gps.enabled") || !strcasecmp(key, "gps.enabled")) {
+						s9_ghost_gnss_set_enabled(simple_strtol(val, NULL, 10));
+					} else if (!strcasecmp(key, "ghost_gps.lat") || !strcasecmp(key, "gps.lat")) {
+						s9_ghost_gnss_set_lat_str(val);
+					} else if (!strcasecmp(key, "ghost_gps.lon") || !strcasecmp(key, "gps.lon")) {
+						s9_ghost_gnss_set_lon_str(val);
+					} else if (!strcasecmp(key, "ghost_gps.alt") || !strcasecmp(key, "gps.alt")) {
+						s9_ghost_gnss_set_alt_str(val);
+					} else {
+						/* 2. Generic system properties (ro.*, gsm.*, persist.*, sys.*, etc.) */
+						s9_ghost_set_prop(key, val);
 					}
 				}
 				line = next_line;
 			}
+			s9_ghost_harmonize_properties();
 			spin_unlock_irqrestore(&s9_serial_lock, flags);
 
-			pr_info("S9GhostSerial: Loaded custom profile from %s\n", conf_paths[p_idx]);
+			pr_info("S9GhostSerial: Loaded custom profile from %s (props=%d, wifi=%d, bt=%d)\n",
+				conf_paths[p_idx], s9_ghost_prop_count,
+				s9_active_serial_prof.has_wifi_mac,
+				s9_active_serial_prof.has_bt_mac);
 			break;
 		}
 	}
@@ -257,6 +490,12 @@ void s9_ghost_serial_init(void)
 	spin_lock_irqsave(&s9_serial_lock, flags);
 	if (!s9_active_serial_prof.active) {
 		s9_generate_deterministic_profile(&s9_active_serial_prof);
+		s9_ghost_set_prop("ro.serialno", s9_active_serial_prof.serialno);
+		s9_ghost_set_prop("ro.boot.serialno", s9_active_serial_prof.serialno);
+		s9_ghost_set_prop("ro.boot.ap_serial", s9_active_serial_prof.ap_serial);
+		s9_ghost_set_prop("ro.boot.em.did", s9_active_serial_prof.em_did);
+		s9_ghost_set_prop("ril.serialnumber", s9_active_serial_prof.samsung_serial);
+		s9_ghost_harmonize_properties();
 		pr_info("S9GhostSerial: Initialized active profile: serialno=%s ap=%s did=%s lot2=%s\n",
 			s9_active_serial_prof.serialno,
 			s9_active_serial_prof.ap_serial,
@@ -287,7 +526,6 @@ static void s9_replace_token_value(char *buf, size_t capacity, const char *prefi
 		size_t old_val_len;
 		size_t tail_len;
 
-		/* Find end of token: whitespace, null, or separator */
 		while (*val_end && *val_end != ' ' && *val_end != '\t' &&
 		       *val_end != '\r' && *val_end != '\n')
 			val_end++;
@@ -295,7 +533,6 @@ static void s9_replace_token_value(char *buf, size_t capacity, const char *prefi
 		old_val_len = (size_t)(val_end - val_start);
 		tail_len = strlen(val_end);
 
-		/* Check if replacement fits within capacity */
 		if (strlen(buf) - old_val_len + val_len + 1 <= capacity) {
 			if (old_val_len != val_len)
 				memmove(val_start + val_len, val_end, tail_len + 1);
@@ -389,13 +626,33 @@ bool s9_ghost_is_cloaked_efs_path(const struct path *path)
 	dname = dentry->d_name.name;
 	pname = dentry->d_parent ? dentry->d_parent->d_name.name : NULL;
 
-	/* 1. Fast name filter */
-	if (!dname || strcmp(dname, "serial_no"))
-		return false;
-	if (!pname || strcmp(pname, "FactoryApp"))
+	if (!dname || !pname)
 		return false;
 
-	/* 2. Resolve mount path if needed */
+	/* 1. Fast name filter by parent and filename */
+	if (!strcmp(pname, "FactoryApp")) {
+		if (strcmp(dname, "serial_no") &&
+		    strcmp(dname, "ap_serial") &&
+		    strcmp(dname, "em_did") &&
+		    strcmp(dname, "samsung_serial") &&
+		    strcmp(dname, "imei") &&
+		    strcmp(dname, "imsi") &&
+		    strcmp(dname, "meid"))
+			return false;
+	} else if (!strcmp(pname, "imei")) {
+		if (strcmp(dname, "imei.dat"))
+			return false;
+	} else if (!strcmp(pname, "wifi")) {
+		if (strcmp(dname, ".mac.info") && strcmp(dname, ".mac.cob"))
+			return false;
+	} else if (!strcmp(pname, "bluetooth")) {
+		if (strcmp(dname, "bt_addr"))
+			return false;
+	} else {
+		return false;
+	}
+
+	/* 2. Resolve mount path to confirm inside EFS */
 	pathname = d_path(path, buf, sizeof(buf));
 	if (IS_ERR(pathname))
 		return false;
@@ -414,16 +671,66 @@ EXPORT_SYMBOL(s9_ghost_is_cloaked_efs_path);
 bool s9_ghost_get_cloaked_efs_payload(const char *dname, const char *pname,
 				      char *out, size_t out_len, size_t *out_plen)
 {
+	unsigned long flags;
+	size_t slen = 0;
+	bool found = false;
+
 	s9_ensure_init();
 
-	if (!dname || !pname || !out || out_len < 16 || !out_plen)
+	if (!dname || !pname || !out || out_len < 32 || !out_plen)
 		return false;
 
-	if (!strcmp(pname, "FactoryApp") && !strcmp(dname, "serial_no")) {
-		size_t slen = strlen(s9_active_serial_prof.efs_serial_line);
-		if (slen >= out_len)
-			return false;
-		strlcpy(out, s9_active_serial_prof.efs_serial_line, out_len);
+	spin_lock_irqsave(&s9_serial_lock, flags);
+
+	if (!strcmp(pname, "FactoryApp")) {
+		if (!strcmp(dname, "serial_no")) {
+			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.efs_serial_line);
+			found = true;
+		} else if (!strcmp(dname, "ap_serial")) {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.ap_serial);
+			found = true;
+		} else if (!strcmp(dname, "em_did")) {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.em_did);
+			found = true;
+		} else if (!strcmp(dname, "samsung_serial")) {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.samsung_serial);
+			found = true;
+		} else if (!strcmp(dname, "imei")) {
+			if (s9_active_serial_prof.imei[0] != '\0') {
+				slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.imei);
+				found = true;
+			}
+		} else if (!strcmp(dname, "imsi")) {
+			if (s9_active_serial_prof.imsi[0] != '\0') {
+				slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.imsi);
+				found = true;
+			}
+		} else if (!strcmp(dname, "meid")) {
+			if (s9_active_serial_prof.meid[0] != '\0') {
+				slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.meid);
+				found = true;
+			}
+		}
+	} else if (!strcmp(pname, "imei") && !strcmp(dname, "imei.dat")) {
+		if (s9_active_serial_prof.imei[0] != '\0') {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.imei);
+			found = true;
+		}
+	} else if (!strcmp(pname, "wifi") && (!strcmp(dname, ".mac.info") || !strcmp(dname, ".mac.cob"))) {
+		if (s9_active_serial_prof.has_wifi_mac) {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.wifi_mac_str);
+			found = true;
+		}
+	} else if (!strcmp(pname, "bluetooth") && !strcmp(dname, "bt_addr")) {
+		if (s9_active_serial_prof.has_bt_mac) {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.bt_mac_str);
+			found = true;
+		}
+	}
+
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+
+	if (found && slen > 0 && slen < out_len) {
 		*out_plen = slen;
 		return true;
 	}
@@ -454,8 +761,27 @@ ssize_t s9_ghost_vfs_inject_string(char __user *buf, size_t count, loff_t *pos,
 }
 EXPORT_SYMBOL(s9_ghost_vfs_inject_string);
 
+bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf)
+{
+	unsigned long flags;
+	bool ok = false;
+
+	if (!buf)
+		return false;
+
+	s9_ensure_init();
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.has_wifi_mac) {
+		memcpy(buf, s9_active_serial_prof.wifi_mac_bytes, 6);
+		ok = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ok;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_mac_bytes);
+
 /*
- * Memory-Mapped Android Property Live Sync
+ * Memory-Mapped Android Property In-Place Patcher
  */
 static int s9_patch_prop_file_one(const char *rel_path, const char *prop_name,
 				  const char *new_val, size_t val_len)
@@ -515,58 +841,201 @@ static int s9_patch_prop_file_one(const char *rel_path, const char *prop_name,
 	return patched;
 }
 
+static int s9_patch_prop_context_batch(const char *rel_path)
+{
+	struct file *filp;
+	char *buf;
+	ssize_t bytes;
+	int i, k;
+	int total_patched = 0;
+	char full_path[128];
+
+	if (s9_ghost_prop_count == 0)
+		return 0;
+
+	snprintf(full_path, sizeof(full_path), "/dev/__properties__/%s", rel_path);
+	filp = filp_open(full_path, O_RDWR, 0);
+	if (IS_ERR(filp))
+		return PTR_ERR(filp);
+
+	buf = kmalloc(S9_PROP_AREA_SIZE, GFP_KERNEL);
+	if (!buf) {
+		filp_close(filp, NULL);
+		return -ENOMEM;
+	}
+
+	bytes = kernel_read(filp, 0, buf, S9_PROP_AREA_SIZE);
+	if (bytes >= (ssize_t)(S9_PROP_HEADER_SIZE + 96)) {
+		for (i = S9_PROP_HEADER_SIZE; i + 96 < bytes; i += 4) {
+			const char *pname = buf + i + 96;
+			if (*pname == '\0')
+				continue;
+
+			for (k = 0; k < s9_ghost_prop_count; k++) {
+				if (!strcmp(pname, s9_ghost_props[k].key)) {
+					const char *new_val = s9_ghost_props[k].val;
+					size_t val_len = strlen(new_val);
+					u32 serial_word;
+					u32 dirty_word;
+					u32 done_word;
+					char clean_val[92];
+
+					memcpy(&serial_word, buf + i, 4);
+
+					/* Step 1: Mark dirty */
+					dirty_word = serial_word | 1u;
+					kernel_write(filp, &dirty_word, 4, i);
+					smp_wmb();
+
+					/* Step 2: Write new value (zero-padded) */
+					memset(clean_val, 0, sizeof(clean_val));
+					memcpy(clean_val, new_val, min_t(size_t, val_len, sizeof(clean_val) - 1));
+					kernel_write(filp, clean_val, sizeof(clean_val), i + 4);
+					smp_wmb();
+
+					/* Step 3: Clear dirty and increment version */
+					done_word = ((u32)val_len << 24) | (((serial_word | 1u) + 1u) & 0xFFFFFFu);
+					kernel_write(filp, &done_word, 4, i);
+					total_patched++;
+					break;
+				}
+			}
+		}
+	}
+
+	kfree(buf);
+	filp_close(filp, NULL);
+	return total_patched;
+}
+
 int s9_ghost_patch_properties(void)
 {
+	int ctx_idx;
+
 	s9_ensure_init();
 
-	/* Patch ro.serialno and ro.boot.serialno */
+	/* 1. Patch ro.serialno and ro.boot.serialno */
 	s9_patch_prop_file_one("u:object_r:serialno_prop:s0", "ro.serialno",
 			       s9_active_serial_prof.serialno, strlen(s9_active_serial_prof.serialno));
 	s9_patch_prop_file_one("u:object_r:serialno_prop:s0", "ro.boot.serialno",
 			       s9_active_serial_prof.serialno, strlen(s9_active_serial_prof.serialno));
 
-	/* Patch ro.boot.ap_serial and ro.boot.em.did */
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.ap_serial",
+	/* 2. Patch ro.boot.ap_serial and ro.boot.em.did in exported2_default_prop:s0 */
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.ap_serial",
 			       s9_active_serial_prof.ap_serial, strlen(s9_active_serial_prof.ap_serial));
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.em.did",
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.em.did",
 			       s9_active_serial_prof.em_did, strlen(s9_active_serial_prof.em_did));
 
-	/* Patch boot flags */
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.warranty_bit", "0", 1);
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.wb.hs", "0000", 4);
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.wb.snapQB", "0", 1);
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.odin_download", "0", 1);
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.verifiedbootstate", "green", 5);
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.flash.locked", "1", 1);
-	s9_patch_prop_file_one("u:object_r:bootloader_prop:s0", "ro.boot.selinux", "enforcing", 9);
+	/* 3. Patch boot flags in exported2_default_prop:s0 and vendor_default_prop:s0 */
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.warranty_bit", "0", 1);
+	s9_patch_prop_file_one("u:object_r:vendor_default_prop:s0", "ro.vendor.boot.warranty_bit", "0", 1);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.wb.hs", "0000", 4);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.wb.snapQB", "0", 1);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.odin_download", "0", 1);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.verifiedbootstate", "green", 5);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.flash.locked", "1", 1);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.selinux", "enforcing", 9);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.selinux", "1", 1);
 
-	/* Patch crypto state & type (Build #20) */
+	/* 4. Patch crypto state & type */
 	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", "file", 4);
+	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
 	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.type", "file", 4);
+	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", "file", 4);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
 
-	/* Always lock ro.build.version.sdk to target SDK (29 on A10, 33 on A13) */
+	/* 5. Always lock ro.build.version.sdk to target SDK */
 	s9_patch_prop_file_one("u:object_r:build_prop:s0", "ro.build.version.sdk", S9_TARGET_SDK_STR, 2);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.version.sdk", S9_TARGET_SDK_STR, 2);
 	s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.build.version.sdk", S9_TARGET_SDK_STR, 2);
+
+	/* 6. Patch odsign verification */
+	s9_patch_prop_file_one("u:object_r:odsign_prop:s0", "odsign.verification.success", "1", 1);
+	s9_patch_prop_file_one("u:object_r:odsign_prop:s0", "odsign.verification.done", "1", 1);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.success", "1", 1);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.done", "1", 1);
+
+	/* 7. ADB Security: Keep Stock Samsung default (ro.adb.secure=1) so RSA dialog works natively */
+
+	/* 8. Skip Setup Wizard */
+	s9_patch_prop_file_one("u:object_r:setupwizard_prop:s0", "ro.setupwizard.mode", "DISABLED", 8);
+	s9_patch_prop_file_one("u:object_r:setupwizard_prop:s0", "setupwizard.feature.enable_stencil_partner_customization", "false", 5);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.setupwizard.mode", "DISABLED", 8);
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.setupwizard.mode", "DISABLED", 8);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.setupwizard", "FINISH", 6);
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "persist.sys.setupwizard", "FINISH", 6);
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "sys.pdp.action", "setupwizard_finish", 18);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.vzw_setup_running", "false", 5);
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "persist.sys.vzw_setup_running", "false", 5);
+
+	/* 9. Explicit patch for RIL, OMC and Security props */
+	{
+		const char *prod_code = s9_ghost_get_prop("ril.product_code");
+		const char *sec_policy = s9_ghost_get_prop("selinux.policy_version");
+		const char *csc_ver = s9_ghost_get_prop("ril.official_cscver");
+
+		if (prod_code && *prod_code) {
+			s9_patch_prop_file_one("u:object_r:radio_prop:s0", "ril.product_code", prod_code, strlen(prod_code));
+			s9_patch_prop_file_one("u:object_r:vendor_default_prop:s0", "vendor.ril.product_code", prod_code, strlen(prod_code));
+		}
+		if (sec_policy && *sec_policy) {
+			s9_patch_prop_file_one("u:object_r:security_prop:s0", "selinux.policy_version", sec_policy, strlen(sec_policy));
+		}
+		if (csc_ver && *csc_ver) {
+			s9_patch_prop_file_one("u:object_r:radio_prop:s0", "ril.official_cscver", csc_ver, strlen(csc_ver));
+			s9_patch_prop_file_one("u:object_r:exported_config_prop:s0", "ro.omc.build.version", csc_ver, strlen(csc_ver));
+		}
+		{
+			const char *bb_ver = s9_ghost_get_prop("gsm.version.baseband");
+			if (bb_ver && *bb_ver) {
+				s9_patch_prop_file_one("u:object_r:radio_prop:s0", "gsm.version.baseband", bb_ver, strlen(bb_ver));
+				s9_patch_prop_file_one("u:object_r:radio_prop:s0", "ril.sw_ver", bb_ver, strlen(bb_ver));
+			}
+		}
+	}
+
+	/* 10. Apply dynamic properties loaded from ghost.conf across all contexts */
+	if (s9_ghost_prop_count > 0) {
+		for (ctx_idx = 0; s9_prop_contexts[ctx_idx]; ctx_idx++) {
+			s9_patch_prop_context_batch(s9_prop_contexts[ctx_idx]);
+		}
+	}
 
 	return 0;
 }
 EXPORT_SYMBOL(s9_ghost_patch_properties);
 
+static void s9_optimize_boot_io(void)
+{
+	struct file *f = filp_open("/sys/block/sda/queue/read_ahead_kb", O_WRONLY, 0);
+	if (!IS_ERR(f)) {
+		kernel_write(f, "2048\n", 5, 0);
+		filp_close(f, NULL);
+	}
+}
+
 static void s9_config_reload_work_fn(struct work_struct *work)
 {
 	static int passes = 0;
+	s9_optimize_boot_io();
 	s9_load_config_file();
 	s9_ghost_patch_properties();
 	passes++;
-	if (passes == 1) {
-		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(8000));
-	}
+	if (passes == 1)
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(3000));
+	else if (passes == 2)
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(5000));
+	else if (passes == 3)
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(7000));
+	else if (passes == 4)
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(10000));
+	else if (passes == 5)
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(15000));
+	else if (passes == 6)
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(20000));
+	else if (passes == 7)
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(30000));
 }
 
 /*
@@ -574,9 +1043,10 @@ static void s9_config_reload_work_fn(struct work_struct *work)
  */
 static int s9_serial_proc_show(struct seq_file *m, void *v)
 {
+	int i;
 	s9_ensure_init();
 
-	seq_puts(m, "=== S9 Ghost Serial Virtualization ===\n");
+	seq_puts(m, "=== S9 Ghost Serial & Profile Virtualization ===\n");
 	seq_printf(m, "Status            : %s\n", s9_active_serial_prof.active ? "ACTIVE" : "INACTIVE");
 	seq_puts(m, "SELinux State     : Enforcing (Ghost Cloaked)\n");
 	seq_printf(m, "Active SerialNo   : %s\n", s9_active_serial_prof.serialno);
@@ -587,12 +1057,22 @@ static int s9_serial_proc_show(struct seq_file *m, void *v)
 	seq_printf(m, "Active Lot ID2    : %s\n", s9_active_serial_prof.lot_id2);
 	seq_printf(m, "Samsung Serial    : %s\n", s9_active_serial_prof.samsung_serial);
 	seq_printf(m, "EFS Factory Line  : %s", s9_active_serial_prof.efs_serial_line);
+	seq_printf(m, "IMEI              : %s\n", s9_active_serial_prof.imei[0] ? s9_active_serial_prof.imei : "<default>");
+	seq_printf(m, "IMSI              : %s\n", s9_active_serial_prof.imsi[0] ? s9_active_serial_prof.imsi : "<default>");
+	seq_printf(m, "MEID              : %s\n", s9_active_serial_prof.meid[0] ? s9_active_serial_prof.meid : "<default>");
+	seq_printf(m, "Wi-Fi MAC         : %s\n", s9_active_serial_prof.has_wifi_mac ? s9_active_serial_prof.wifi_mac_str : "<default>");
+	seq_printf(m, "Bluetooth MAC     : %s\n", s9_active_serial_prof.has_bt_mac ? s9_active_serial_prof.bt_mac_str : "<default>");
+	seq_printf(m, "Custom Props (%d) :\n", s9_ghost_prop_count);
+	for (i = 0; i < s9_ghost_prop_count; i++) {
+		seq_printf(m, "  [%02d] %s = %s\n", i + 1, s9_ghost_props[i].key, s9_ghost_props[i].val);
+	}
 	return 0;
 }
 
 static int s9_serial_proc_open(struct inode *inode, struct file *file)
 {
-	if (current_uid().val != 0)
+	kuid_t uid = current_uid();
+	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
 		return -ENOENT;
 	return single_open(file, s9_serial_proc_show, NULL);
 }
@@ -602,8 +1082,9 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 {
 	char kcmd[32];
 	size_t len = min(count, sizeof(kcmd) - 1);
+	kuid_t uid = current_uid();
 
-	if (current_uid().val != 0)
+	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
 		return -ENOENT;
 
 	if (copy_from_user(kcmd, buf, len))
@@ -633,7 +1114,7 @@ static int __init s9_ghost_serial_late_init(void)
 	proc_create("s9_serial", 0600, NULL, &s9_serial_proc_fops);
 
 	INIT_DELAYED_WORK(&s9_config_reload_work, s9_config_reload_work_fn);
-	/* Initial property sync at 2 seconds, followed by second pass at 10 seconds */
+	/* Initial property sync at 2 seconds, followed by progressive passes */
 	schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(2000));
 	return 0;
 }
@@ -646,6 +1127,6 @@ static int __init s9_ghost_serial_core_init(void)
 }
 core_initcall(s9_ghost_serial_core_init);
 
-MODULE_DESCRIPTION("Samsung Galaxy S9 Pure Kernel Serial Number Virtualizer");
+MODULE_DESCRIPTION("Samsung Galaxy S9 Pure Kernel Serial Number & Profile Virtualizer");
 MODULE_AUTHOR("khiconjk");
 MODULE_LICENSE("GPL v2");

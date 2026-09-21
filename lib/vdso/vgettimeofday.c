@@ -305,17 +305,16 @@ notrace int __vdso_clock_gettime(clockid_t clock, struct timespec *ts)
 		do_realtime_coarse(vd, ts);
 		break;
 	case CLOCK_MONOTONIC_COARSE:
-		do_monotonic_coarse(vd, ts);
-		break;
+		/* S9 Ghost Uptime: route CLOCK_MONOTONIC_COARSE through kernel syscall */
+		goto fallback;
 #ifdef ARCH_PROVIDES_TIMER
 	case CLOCK_REALTIME:
 		if (do_realtime(vd, ts))
 			goto fallback;
 		break;
 	case CLOCK_MONOTONIC:
-		if (do_monotonic(vd, ts))
-			goto fallback;
-		break;
+		/* S9 Ghost Uptime: route CLOCK_MONOTONIC through kernel syscall */
+		goto fallback;
 	case CLOCK_MONOTONIC_RAW:
 		if (do_monotonic_raw(vd, ts))
 			goto fallback;

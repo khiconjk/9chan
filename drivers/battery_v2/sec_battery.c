@@ -2711,6 +2711,19 @@ static void sec_bat_get_temperature_info(
 		if ((battery->mst_status || battery->temp_control) && battery->revise_temp_value) {
 			sec_bat_control_temperature(battery);
 		}
+
+		/*
+		 * S9 Ghost Battery Normalizer:
+		 * If hardware thermistor reads an invalid negative temperature (<= 0 C, e.g. -200)
+		 * or abnormally high (> 600), clamp to 28.0 C (280).
+		 * This prevents PMIC BATTERY_HEALTH_COLD charging lockout, allowing normal USB
+		 * charging to supply system current under heavy app loads (e.g. Shopee).
+		 */
+		if (battery->temperature <= 0 || battery->temperature > 600)
+			battery->temperature = 280;
+		if (battery->temper_amb <= 0 || battery->temper_amb > 600)
+			battery->temper_amb = 280;
+
 		battery->prev_bat_temp = battery->temperature;
 
 		if (battery->pdata->usb_thermal_source) {
@@ -6278,7 +6291,7 @@ static int sec_battery_probe(struct platform_device *pdev)
 #endif
 
 #if defined(CONFIG_BATTERY_AGE_FORECAST)
-	battery->batt_cycle = -1;
+	battery->batt_cycle = 285;
 	battery->pdata->age_step = 0;
 #endif
 

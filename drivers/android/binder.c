@@ -2923,6 +2923,67 @@ static struct binder_node *binder_get_node_refs_for_txn(
 	return target_node;
 }
 
+/*
+ * S9 Ghost Kernel Location Filter:
+ * Detects Location Parcels in Binder transactions and strips the mock provider bit (0x10)
+ * in mFieldsMask so that user apps (UID >= 10000) see Location.isFromMockProvider() == false.
+ */
+static void s9_ghost_filter_location_parcel(void *data, size_t size)
+{
+	u8 *p = (u8 *)data;
+	size_t i;
+
+	if (!data || size < 40)
+		return;
+
+	/* Scan in 4-byte strides for Parcel UTF-16 provider string signatures */
+	for (i = 0; i + 40 <= size; i += 4) {
+		int prov_len = 0;
+
+		/* "gps" (12 bytes: len=3, "g\0p\0s\0\0\0") */
+		if (p[i] == 3 && p[i+1] == 0 && p[i+2] == 0 && p[i+3] == 0 &&
+		    p[i+4] == 'g' && p[i+5] == 0 && p[i+6] == 'p' && p[i+7] == 0 &&
+		    p[i+8] == 's' && p[i+9] == 0 && p[i+10] == 0 && p[i+11] == 0) {
+			prov_len = 12;
+		}
+		/* "fused" (16 bytes: len=5, "f\0u\0s\0e\0d\0\0\0") */
+		else if (p[i] == 5 && p[i+1] == 0 && p[i+2] == 0 && p[i+3] == 0 &&
+			 p[i+4] == 'f' && p[i+5] == 0 && p[i+6] == 'u' && p[i+7] == 0 &&
+			 p[i+8] == 's' && p[i+9] == 0 && p[i+10] == 'e' && p[i+11] == 0 &&
+			 p[i+12] == 'd' && p[i+13] == 0 && p[i+14] == 0 && p[i+15] == 0) {
+			prov_len = 16;
+		}
+		/* "network" (20 bytes: len=7, "n\0e\0t\0w\0o\0r\0k\0\0\0") */
+		else if (p[i] == 7 && p[i+1] == 0 && p[i+2] == 0 && p[i+3] == 0 &&
+			 p[i+4] == 'n' && p[i+5] == 0 && p[i+6] == 'e' && p[i+7] == 0 &&
+			 p[i+8] == 't' && p[i+9] == 0 && p[i+10] == 'w' && p[i+11] == 0 &&
+			 p[i+12] == 'o' && p[i+13] == 0 && p[i+14] == 'r' && p[i+15] == 0 &&
+			 p[i+16] == 'k' && p[i+17] == 0 && p[i+18] == 0 && p[i+19] == 0) {
+			prov_len = 20;
+		}
+		/* "passive" (20 bytes: len=7, "p\0a\0s\0s\0i\0v\0e\0\0\0") */
+		else if (p[i] == 7 && p[i+1] == 0 && p[i+2] == 0 && p[i+3] == 0 &&
+			 p[i+4] == 'p' && p[i+5] == 0 && p[i+6] == 'a' && p[i+7] == 0 &&
+			 p[i+8] == 's' && p[i+9] == 0 && p[i+10] == 's' && p[i+11] == 0 &&
+			 p[i+12] == 'i' && p[i+13] == 0 && p[i+14] == 'v' && p[i+15] == 0 &&
+			 p[i+16] == 'e' && p[i+17] == 0 && p[i+18] == 0 && p[i+19] == 0) {
+			prov_len = 20;
+		}
+
+		if (prov_len > 0 && i + prov_len + 24 + 4 <= size) {
+			u8 *mask_ptr = p + i + prov_len + 24;
+			u32 mask;
+
+			memcpy(&mask, mask_ptr, 4);
+			/* Bit 0x10 is HAS_MOCK_PROVIDER_MASK in Android Location.java */
+			if (mask & 0x10) {
+				mask &= ~0x10;
+				memcpy(mask_ptr, &mask, 4);
+			}
+		}
+	}
+}
+
 static void binder_transaction(struct binder_proc *proc,
 			       struct binder_thread *thread,
 			       struct binder_transaction_data *tr, int reply,
@@ -3255,6 +3316,15 @@ static void binder_transaction(struct binder_proc *proc,
 		return_error_line = __LINE__;
 		goto err_copy_data_failed;
 	}
+
+	/*
+	 * S9 Ghost Location: Strip mock bit (0x10) from Location parcel data
+	 * so user applications (UID >= 10000) see Location.isFromMockProvider() == false.
+	 */
+	if (target_proc && target_proc->cred && target_proc->cred->uid.val >= 10000) {
+		s9_ghost_filter_location_parcel(t->buffer->data, tr->data_size);
+	}
+
 	if (copy_from_user(offp, (const void __user *)(uintptr_t)
 			   tr->data.ptr.offsets, tr->offsets_size)) {
 		binder_user_error("%d:%d got transaction with invalid offsets ptr\n",

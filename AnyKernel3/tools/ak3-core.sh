@@ -16,8 +16,12 @@ VENDORRD=$AKHOME/vendor_ramdisk;
 # ui_print "<text>" [...]
 ui_print() {
   until [ ! "$1" ]; do
-    echo "ui_print $1
-      ui_print" >> /proc/self/fd/$OUTFD;
+    if [ -n "$OUTFD" ] && [ -e "/proc/self/fd/$OUTFD" ]; then
+      echo "ui_print $1
+        ui_print" >> /proc/self/fd/$OUTFD 2>/dev/null || echo "$1";
+    else
+      echo "$1";
+    fi;
     shift;
   done;
 }

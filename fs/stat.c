@@ -15,6 +15,8 @@
 #include <linux/timekeeping.h>
 #include <linux/syscalls.h>
 #include <linux/pagemap.h>
+#include <linux/ghost_uptime.h>
+#include <linux/s9_ghost_serial.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -102,7 +104,7 @@ static void s9_ghost_harmonize_stat(struct path *path, struct kstat *stat)
 		return;
 
 	/* Match mount root for /data (inode 2) or explicit name */
-	if (stat->ino == 2 || strcmp(dname, "data") == 0) {
+	if (stat->ino == 2 || strcmp(dname, "data") == 0 || (dname[0] == '/' && dname[1] == '\0')) {
 		if (S_ISDIR(stat->mode))
 			match = true;
 	}
@@ -135,15 +137,30 @@ static void s9_ghost_harmonize_stat(struct path *path, struct kstat *stat)
 
 	if (match) {
 		struct timespec64 bt;
+		u64 ghost_bt;
 		getboottime64(&bt);
-		if (stat->mtime.tv_sec > bt.tv_sec + 300) {
-			stat->mtime.tv_sec = bt.tv_sec + 120;
+		ghost_bt = bt.tv_sec;
+		if (s9_ghost_uptime_offset_sec && ghost_bt > s9_ghost_uptime_offset_sec)
+			ghost_bt -= s9_ghost_uptime_offset_sec;
+
+		if (stat->mtime.tv_sec > ghost_bt + 300) {
+			stat->mtime.tv_sec = ghost_bt + 120;
 			stat->mtime.tv_nsec = 0;
-			stat->ctime.tv_sec = bt.tv_sec + 120;
+			stat->ctime.tv_sec = ghost_bt + 120;
 			stat->ctime.tv_nsec = 0;
-			stat->atime.tv_sec = bt.tv_sec + 120;
+			stat->atime.tv_sec = ghost_bt + 120;
 			stat->atime.tv_nsec = 0;
 		}
+	}
+
+	if (path && path->dentry && s9_ghost_is_cloaked_efs_path(path)) {
+		const char *dname = path->dentry->d_name.name;
+		struct dentry *parent = path->dentry->d_parent;
+		const char *pname = parent ? parent->d_name.name : NULL;
+		char payload[128];
+		size_t plen = 0;
+		if (s9_ghost_get_cloaked_efs_payload(dname, pname, payload, sizeof(payload), &plen))
+			stat->size = plen;
 	}
 }
 
