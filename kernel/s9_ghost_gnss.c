@@ -545,26 +545,15 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 
 		/* $GPRMC - Recommended Minimum sentence (W3) */
 		{
-			static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-			u64 day, y400, y100, y4, y1, year;
+			u64 day = (sec / 86400);
+			u64 y400 = day / 146097; day %= 146097;
+			u64 y100 = day / 36524; if (y100 == 4) y100 = 3; day -= y100 * 36524;
+			u64 y4 = day / 1461; day %= 1461;
+			u64 y1 = day / 365; if (y1 == 4) y1 = 3; day -= y1 * 365;
+			u64 year = 1970 + y400 * 400 + y100 * 100 + y4 * 4 + y1;
 			int month, mday;
-			bool leap;
-
-			day = (sec / 86400);
-			y400 = day / 146097;
-			day %= 146097;
-			y100 = day / 36524;
-			if (y100 == 4)
-				y100 = 3;
-			day -= y100 * 36524;
-			y4 = day / 1461;
-			day %= 1461;
-			y1 = day / 365;
-			if (y1 == 4)
-				y1 = 3;
-			day -= y1 * 365;
-			year = 1970 + y400 * 400 + y100 * 100 + y4 * 4 + y1;
-			leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+			static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+			bool leap = (year%4==0 && (year%100!=0 || year%400==0));
 
 			for (month = 0; month < 12; month++) {
 				int md = mdays[month] + (month == 1 && leap ? 1 : 0);
@@ -628,7 +617,7 @@ static int s9_gps_proc_show(struct seq_file *m, void *v)
 static int s9_gps_proc_open(struct inode *inode, struct file *file)
 {
 	kuid_t uid = current_uid();
-	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
+	if (uid.val != 0)
 		return -ENOENT;
 	return single_open(file, s9_gps_proc_show, NULL);
 }
@@ -641,7 +630,7 @@ static ssize_t s9_gps_proc_write(struct file *file, const char __user *buffer,
 	char *comma;
 	kuid_t uid = current_uid();
 
-	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
+	if (uid.val != 0)
 		return -ENOENT;
 
 	if (copy_from_user(kcmd, buffer, len))

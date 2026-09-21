@@ -65,6 +65,8 @@ static int s9_headless_proc_show(struct seq_file *m, void *v)
 
 static int s9_headless_proc_open(struct inode *inode, struct file *file)
 {
+	if (current_uid().val != 0)
+		return -ENOENT;
 	return single_open(file, s9_headless_proc_show, NULL);
 }
 
@@ -1185,7 +1187,7 @@ int panel_probe(struct panel_device *panel)
 				&panel->dim_flash_work.dwork, msecs_to_jiffies(500));
 #endif /* CONFIG_SUPPORT_DIM_FLASH */
 
-	proc_create("s9_headless", 0444, NULL, &s9_headless_proc_fops);
+	proc_create("s9_headless", 0400, NULL, &s9_headless_proc_fops);
 
 	return 0;
 }

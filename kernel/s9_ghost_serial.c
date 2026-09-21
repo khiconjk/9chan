@@ -1091,7 +1091,7 @@ static int s9_serial_proc_show(struct seq_file *m, void *v)
 static int s9_serial_proc_open(struct inode *inode, struct file *file)
 {
 	kuid_t uid = current_uid();
-	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
+	if (uid.val != 0)
 		return -ENOENT;
 	return single_open(file, s9_serial_proc_show, NULL);
 }
@@ -1103,7 +1103,7 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 	size_t len = min(count, sizeof(kcmd) - 1);
 	kuid_t uid = current_uid();
 
-	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
+	if (uid.val != 0)
 		return -ENOENT;
 
 	if (copy_from_user(kcmd, buf, len))

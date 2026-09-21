@@ -905,11 +905,18 @@ struct compat_getdents_callback {
 
 static inline bool s9_ghost_compat_should_hide(struct file *file, const char *name, int namlen)
 {
-	if (unlikely(current_uid().val >= 10000)) {
+	/* Hide ghost proc entries from ALL non-root users */
+	if (unlikely(current_uid().val != 0)) {
 		if (namlen == 9 && memcmp(name, "s9_serial", 9) == 0)
 			return true;
 		if (namlen == 6 && memcmp(name, "s9_gps", 6) == 0)
 			return true;
+		if (namlen == 11 && memcmp(name, "s9_headless", 11) == 0)
+			return true;
+	}
+
+	/* Hide /data/adb from untrusted apps only */
+	if (unlikely(current_uid().val >= 10000)) {
 		if (namlen == 3 && memcmp(name, "adb", 3) == 0) {
 			if (file && file->f_path.dentry) {
 				struct dentry *d = file->f_path.dentry;
