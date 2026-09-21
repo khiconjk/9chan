@@ -3576,8 +3576,13 @@ static int selinux_inode_permission(struct inode *inode, int mask)
 		} else if (magic == TMPFS_MAGIC) {
 			struct dentry *dentry = d_find_any_alias(inode);
 			if (dentry) {
-				bool ok = (dentry->d_name.name &&
-					   strstr(dentry->d_name.name, "odsign_prop"));
+				char tmpname[32];
+				bool ok = false;
+				if (dentry->d_name.name && dentry->d_name.len < sizeof(tmpname)) {
+					memcpy(tmpname, dentry->d_name.name, dentry->d_name.len);
+					tmpname[dentry->d_name.len] = '\0';
+					ok = (strstr(tmpname, "odsign_prop") != NULL);
+				}
 				dput(dentry);
 				if (ok && (mask & ~(MAY_READ | MAY_NOT_BLOCK)) == 0)
 					return 0;

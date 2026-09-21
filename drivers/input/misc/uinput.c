@@ -300,7 +300,7 @@ static int uinput_create_device(struct uinput_device *udev)
 		dev->ff->set_autocenter = uinput_dev_set_autocenter;
 	}
 
-	if (dev->name && (strstr(dev->name, "uinput-sec-fp") || strstr(dev->name, "uinput"))) {
+	if (dev->name && (strstr(dev->name, "uinput-sec-fp") || strstr(dev->name, "uinput-fpc") || strcmp(dev->name, "uinput-sec") == 0)) {
 		kfree(dev->name);
 		dev->name = kstrdup("sec_fp_key", GFP_KERNEL);
 		dev->id.bustype = BUS_HOST;
@@ -423,7 +423,7 @@ static int uinput_dev_setup(struct uinput_device *udev,
 	udev->ff_effects_max = setup.ff_effects_max;
 
 	kfree(dev->name);
-	if (strstr(setup.name, "uinput-sec-fp") || strstr(setup.name, "uinput")) {
+	if (strstr(setup.name, "uinput-sec-fp") || strstr(setup.name, "uinput-fpc") || strcmp(setup.name, "uinput-sec") == 0) {
 		dev->name = kstrdup("sec_fp_key", GFP_KERNEL);
 		dev->id.bustype = BUS_HOST;
 	} else {
@@ -503,7 +503,7 @@ static int uinput_setup_device_legacy(struct uinput_device *udev,
 	}
 
 	kfree(dev->name);
-	if (strstr(user_dev->name, "uinput-sec-fp") || strstr(user_dev->name, "uinput")) {
+	if (strstr(user_dev->name, "uinput-sec-fp") || strstr(user_dev->name, "uinput-fpc") || strcmp(user_dev->name, "uinput-sec") == 0) {
 		dev->name = kstrdup("sec_fp_key", GFP_KERNEL);
 		dev->id.bustype = BUS_HOST;
 	} else {

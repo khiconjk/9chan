@@ -633,6 +633,10 @@ static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size
 	char *kbuf;
 	char *p, *end;
 	bool modified = false;
+	static const char sdk_prefix[] = "ro.build.version.sdk=";
+	static const size_t sdk_prefix_len = 21;
+	const char *target = S9_TARGET_SDK_STR;
+	size_t target_len = strlen(target);
 
 	if (!file || !file->f_path.dentry || !buf || count < 24 || count > 1048576)
 		return;
@@ -660,32 +664,61 @@ static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size
 
 	p = kbuf;
 	while (p && p < end) {
-		p = strstr(p, "ro.build.version.sdk=");
+		char *val_start, *val_end;
+		size_t old_len, tail_len;
+
+		p = strstr(p, sdk_prefix);
 		if (!p)
 			break;
-		p += 21; /* strlen("ro.build.version.sdk=") */
-		while (p < end && (*p == ' ' || *p == '\t'))
-			p++;
-		if (p < end && *p >= '0' && *p <= '9') {
-			if (p + 1 < end && *(p + 1) >= '0' && *(p + 1) <= '9') {
-				if (*p != S9_TARGET_SDK_STR[0] || *(p + 1) != S9_TARGET_SDK_STR[1]) {
-					*p = S9_TARGET_SDK_STR[0];
-					*(p + 1) = S9_TARGET_SDK_STR[1];
-					modified = true;
-				}
-				p += 2;
-			} else {
-				if (*p != S9_TARGET_SDK_STR[0]) {
-					*p = S9_TARGET_SDK_STR[0];
-					modified = true;
-				}
-				p++;
+		val_start = p + sdk_prefix_len;
+
+		/* Skip whitespace */
+		while (val_start < end && (*val_start == ' ' || *val_start == '\t'))
+			val_start++;
+
+		/* Find end of numeric value */
+		val_end = val_start;
+		while (val_end < end && *val_end >= '0' && *val_end <= '9')
+			val_end++;
+
+		old_len = (size_t)(val_end - val_start);
+		if (old_len == 0 || old_len > 3) {
+			p = val_end;
+			continue;
+		}
+
+		/* Same length: simple in-place replace */
+		if (old_len == target_len) {
+			if (memcmp(val_start, target, target_len) != 0) {
+				memcpy(val_start, target, target_len);
+				modified = true;
+			}
+		} else if (old_len > target_len) {
+			/* Old is longer: replace and shift left */
+			memcpy(val_start, target, target_len);
+			tail_len = strlen(val_end);
+			memmove(val_start + target_len, val_end, tail_len + 1);
+			modified = true;
+			/* Adjust end pointer */
+			end -= (old_len - target_len);
+		} else {
+			/* Old is shorter: shift right and replace */
+			tail_len = strlen(val_end);
+			if ((size_t)(end - kbuf) + (target_len - old_len) < count + 1) {
+				memmove(val_start + target_len, val_end, tail_len + 1);
+				memcpy(val_start, target, target_len);
+				modified = true;
+				end += (target_len - old_len);
 			}
 		}
+		p = val_start + target_len;
 	}
 
-	if (modified)
-		copy_to_user(buf, kbuf, count);
+	if (modified) {
+		size_t new_count = min((size_t)(end - kbuf), count);
+		if (copy_to_user(buf, kbuf, new_count))
+			pr_warn_once("s9_ghost: copy_to_user failed in build_prop filter\n");
+	}
 
 	kfree(kbuf);
 }

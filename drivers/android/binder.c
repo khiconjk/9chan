@@ -2933,7 +2933,7 @@ static void s9_ghost_filter_location_parcel(void *data, size_t size)
 	u8 *p = (u8 *)data;
 	size_t i;
 
-	if (!data || size < 40)
+	if (!data || size < 64 || size > 1024)
 		return;
 
 	/* Scan in 4-byte strides for Parcel UTF-16 provider string signatures */

@@ -351,8 +351,11 @@ static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
 		goto out;
 
 	if (domain->old != get_freq(domain)) {
-		pr_warn_ratelimited("exynos-acme: domain%d inconsistency old:%d, real clk:%d (syncing)\n",
-			domain->id, domain->old, get_freq(domain));
+		static unsigned int s9_freq_mismatch_count;
+		s9_freq_mismatch_count++;
+		if (s9_freq_mismatch_count <= 3 || (s9_freq_mismatch_count % 100) == 0)
+			pr_warn("exynos-acme: domain%d inconsistency old:%d, real clk:%d (syncing, count=%u)\n",
+				domain->id, domain->old, get_freq(domain), s9_freq_mismatch_count);
 		domain->old = get_freq(domain);
 	}
 

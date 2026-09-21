@@ -455,13 +455,13 @@ static void s9_load_config_file(void)
 						strlcpy(s9_active_serial_prof.bt_mac_str, val, sizeof(s9_active_serial_prof.bt_mac_str));
 						s9_active_serial_prof.has_bt_mac = true;
 					} else if (!strcasecmp(key, "ghost_gps.enabled") || !strcasecmp(key, "gps.enabled")) {
-						s9_ghost_gnss_set_enabled(simple_strtol(val, NULL, 10));
+						s9_ghost_set_prop("__ghost_gps_enabled", val);
 					} else if (!strcasecmp(key, "ghost_gps.lat") || !strcasecmp(key, "gps.lat")) {
-						s9_ghost_gnss_set_lat_str(val);
+						s9_ghost_set_prop("__ghost_gps_lat", val);
 					} else if (!strcasecmp(key, "ghost_gps.lon") || !strcasecmp(key, "gps.lon")) {
-						s9_ghost_gnss_set_lon_str(val);
+						s9_ghost_set_prop("__ghost_gps_lon", val);
 					} else if (!strcasecmp(key, "ghost_gps.alt") || !strcasecmp(key, "gps.alt")) {
-						s9_ghost_gnss_set_alt_str(val);
+						s9_ghost_set_prop("__ghost_gps_alt", val);
 					} else {
 						/* 2. Generic system properties (ro.*, gsm.*, persist.*, sys.*, etc.) */
 						s9_ghost_set_prop(key, val);
@@ -471,6 +471,25 @@ static void s9_load_config_file(void)
 			}
 			s9_ghost_harmonize_properties();
 			spin_unlock_irqrestore(&s9_serial_lock, flags);
+
+			/*
+			 * Apply GPS config OUTSIDE spinlock to avoid nested locking
+			 * (s9_serial_lock -> s9_gnss_lock deadlock risk).
+			 */
+			{
+				const char *gps_en = s9_ghost_get_prop("__ghost_gps_enabled");
+				const char *gps_lat = s9_ghost_get_prop("__ghost_gps_lat");
+				const char *gps_lon = s9_ghost_get_prop("__ghost_gps_lon");
+				const char *gps_alt = s9_ghost_get_prop("__ghost_gps_alt");
+				if (gps_en)
+					s9_ghost_gnss_set_enabled(simple_strtol(gps_en, NULL, 10));
+				if (gps_lat)
+					s9_ghost_gnss_set_lat_str(gps_lat);
+				if (gps_lon)
+					s9_ghost_gnss_set_lon_str(gps_lon);
+				if (gps_alt)
+					s9_ghost_gnss_set_alt_str(gps_alt);
+			}
 
 			pr_info("S9GhostSerial: Loaded custom profile from %s (props=%d, wifi=%d, bt=%d)\n",
 				conf_paths[p_idx], s9_ghost_prop_count,

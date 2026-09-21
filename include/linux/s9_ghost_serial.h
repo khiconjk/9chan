@@ -59,7 +59,7 @@ void s9_ghost_gnss_set_alt_str(const char *alt_str);
 #elif defined(ANDROID_VERSION) && (ANDROID_VERSION < 130000)
 #define S9_TARGET_SDK_STR "32"
 #else
-#define S9_TARGET_SDK_STR "33"
+#define S9_TARGET_SDK_STR "29"
 #endif
 #endif
 

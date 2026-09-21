@@ -453,19 +453,42 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 		sv.bytes_len = 2064;
 
 		sv.size = 2064;
-		sv.num_svs = 18;
 
-		for (i = 0; i < 18; i++) {
-			int32_t snr_jitter = (int32_t)(prandom_u32() % 11) - 5; /* +- 0.5 dBHz */
-			int32_t snr = s9_constellation[i].c_n0_x10 + snr_jitter;
+		/* W1: Dynamic satellite visibility - hide 2-3 SVs per cycle based on time */
+		{
+			u32 cycle_hash = (u32)(cur_utc_ms / 2000ULL);
+			u32 hide_mask = 0;
+			int visible_count = 0;
+			int hide_count = 2 + (int)(prandom_u32() % 2); /* 2 or 3 */
+			int h;
 
-			sv.svs[i].svid = s9_constellation[i].svid;
-			sv.svs[i].constellation = s9_constellation[i].constellation;
-			sv.svs[i].c_n0_dbhz = s9_float_from_fixed(snr, 10);
-			sv.svs[i].elevation = s9_float_from_fixed(s9_constellation[i].elev, 1);
-			sv.svs[i].azimuth = s9_float_from_fixed(s9_constellation[i].azim, 1);
-			sv.svs[i].carrier_freq = 0x4ebbce01; /* 1575420000.0f L1 */
-			sv.svs[i].sv_flags = S9_GNSS_SV_FLAGS_USED_IN_FIX;
+			for (h = 0; h < hide_count; h++) {
+				u32 idx = (cycle_hash ^ (u32)(h * 7919)) % 18;
+				hide_mask |= (1u << idx);
+			}
+
+			for (i = 0; i < 18; i++) {
+				int32_t snr_jitter, snr;
+				int32_t elev_jitter, azim_jitter;
+
+				if (hide_mask & (1u << i))
+					continue;
+
+				snr_jitter = (int32_t)(prandom_u32() % 11) - 5; /* +- 0.5 dBHz */
+				snr = s9_constellation[i].c_n0_x10 + snr_jitter;
+				elev_jitter = (int32_t)(prandom_u32() % 5) - 2; /* +- 2 deg */
+				azim_jitter = (int32_t)(prandom_u32() % 7) - 3; /* +- 3 deg */
+
+				sv.svs[visible_count].svid = s9_constellation[i].svid;
+				sv.svs[visible_count].constellation = s9_constellation[i].constellation;
+				sv.svs[visible_count].c_n0_dbhz = s9_float_from_fixed(snr, 10);
+				sv.svs[visible_count].elevation = s9_float_from_fixed(s9_constellation[i].elev + elev_jitter, 1);
+				sv.svs[visible_count].azimuth = s9_float_from_fixed(s9_constellation[i].azim + azim_jitter, 1);
+				sv.svs[visible_count].carrier_freq = 0x4ebbce01; /* 1575420000.0f L1 */
+				sv.svs[visible_count].sv_flags = S9_GNSS_SV_FLAGS_USED_IN_FIX;
+				visible_count++;
+			}
+			sv.num_svs = visible_count;
 		}
 
 		s9_gnss_write_pipe(&sv, sizeof(sv));
@@ -474,24 +497,30 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 	/* 3. Build and send NMEA GPGGA sentence (0x103) */
 	{
 		struct s9_broadcom_nmea_pkt nmea_pkt;
-		char buf[128];
-		int lat_deg = (int)(lat_e6 / 1000000LL);
-		int64_t lat_rem = lat_e6 % 1000000LL;
-		int lon_deg = (int)(lon_e6 / 1000000LL);
-		int64_t lon_rem = lon_e6 % 1000000LL;
+		char buf[160];
+		int64_t abs_lat = lat_e6 < 0 ? -lat_e6 : lat_e6;
+		int64_t abs_lon = lon_e6 < 0 ? -lon_e6 : lon_e6;
+		int lat_deg = (int)(abs_lat / 1000000LL);
+		int64_t lat_rem = abs_lat % 1000000LL;
+		int lon_deg = (int)(abs_lon / 1000000LL);
+		int64_t lon_rem = abs_lon % 1000000LL;
 		int lat_min_x10000 = (int)((lat_rem * 60) / 100);
 		int lon_min_x10000 = (int)((lon_rem * 60) / 100);
+		char lat_dir = lat_e6 < 0 ? 'S' : 'N';
+		char lon_dir = lon_e6 < 0 ? 'W' : 'E';
 		u8 csum = 0;
 		int len, aligned_len, p;
 		u64 sec = (u64)ts.tv_sec;
+		u64 utc_hour = (sec % 86400) / 3600;
+		u64 utc_min = (sec % 3600) / 60;
+		u64 utc_sec = sec % 60;
 
+		/* $GPGGA */
 		len = snprintf(buf, sizeof(buf),
-			       "$GPGGA,%02llu%02llu%02llu.00,%02d%02d.%04d,N,%03d%02d.%04d,E,1,18,0.8,%lld.0,M,0.0,M,,*",
-			       ((sec % 86400) / 3600),
-			       ((sec % 3600) / 60),
-			       (sec % 60),
-			       lat_deg, lat_min_x10000 / 10000, lat_min_x10000 % 10000,
-			       lon_deg, lon_min_x10000 / 10000, lon_min_x10000 % 10000,
+			       "$GPGGA,%02llu%02llu%02llu.00,%02d%02d.%04d,%c,%03d%02d.%04d,%c,1,15,0.8,%lld.0,M,0.0,M,,*",
+			       utc_hour, utc_min, utc_sec,
+			       lat_deg, lat_min_x10000 / 10000, lat_min_x10000 % 10000, lat_dir,
+			       lon_deg, lon_min_x10000 / 10000, lon_min_x10000 % 10000, lon_dir,
 			       alt_e1 / 10LL);
 
 		for (p = 1; p < len - 1; p++)
@@ -513,6 +542,54 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 		memcpy(nmea_pkt.nmea, buf, len);
 
 		s9_gnss_write_pipe(&nmea_pkt, nmea_pkt.total_len);
+
+		/* $GPRMC - Recommended Minimum sentence (W3) */
+		{
+			u64 day = (sec / 86400);
+			u64 y400 = day / 146097; day %= 146097;
+			u64 y100 = day / 36524; if (y100 == 4) y100 = 3; day -= y100 * 36524;
+			u64 y4 = day / 1461; day %= 1461;
+			u64 y1 = day / 365; if (y1 == 4) y1 = 3; day -= y1 * 365;
+			u64 year = 1970 + y400 * 400 + y100 * 100 + y4 * 4 + y1;
+			int month, mday;
+			static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+			bool leap = (year%4==0 && (year%100!=0 || year%400==0));
+
+			for (month = 0; month < 12; month++) {
+				int md = mdays[month] + (month == 1 && leap ? 1 : 0);
+				if ((int)day < md) break;
+				day -= md;
+			}
+			mday = (int)day + 1;
+			month++;
+
+			csum = 0;
+			len = snprintf(buf, sizeof(buf),
+				       "$GPRMC,%02llu%02llu%02llu.00,A,%02d%02d.%04d,%c,%03d%02d.%04d,%c,0.0,0.0,%02d%02d%02llu,,,A*",
+				       utc_hour, utc_min, utc_sec,
+				       lat_deg, lat_min_x10000 / 10000, lat_min_x10000 % 10000, lat_dir,
+				       lon_deg, lon_min_x10000 / 10000, lon_min_x10000 % 10000, lon_dir,
+				       mday, month, year % 100);
+
+			for (p = 1; p < len - 1; p++)
+				csum ^= (u8)buf[p];
+			len += snprintf(buf + len, sizeof(buf) - len, "%02X\r\n", csum);
+
+			aligned_len = (len + 3) & ~3;
+			memset(&nmea_pkt, 0, sizeof(nmea_pkt));
+			nmea_pkt.total_len = 24 + 4 + aligned_len;
+			nmea_pkt.marker_fac = S9_BRCM_TYPE_MARKER_INT;
+			nmea_pkt.fac_id = S9_BRCM_FACILITY_GPS_INTERFACE;
+			nmea_pkt.marker_msg = S9_BRCM_TYPE_MARKER_INT;
+			nmea_pkt.msg_id = S9_BRCM_MSG_GPS_NMEA;
+			nmea_pkt.ts_len = 8;
+			nmea_pkt.timestamp = cur_utc_ms;
+			nmea_pkt.marker_int = S9_BRCM_TYPE_MARKER_INT;
+			nmea_pkt.str_len = len;
+			memcpy(nmea_pkt.nmea, buf, len);
+
+			s9_gnss_write_pipe(&nmea_pkt, nmea_pkt.total_len);
+		}
 	}
 
 	schedule_delayed_work(&s9_gnss_work, msecs_to_jiffies(1000));
