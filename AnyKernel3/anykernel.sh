@@ -46,7 +46,7 @@ write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_
 # Disable forced encryption & Samsung Knox services
 ui_print " ";
 ui_print "- Disabling forced encryption & Knox services...";
-mount -o rw /dev/block/platform/11120000.ufs/by-name/VENDOR /vendor 2>/dev/null || mount -o rw /vendor 2>/dev/null;
+mount -o remount,rw /vendor 2>/dev/null || mount -o rw /dev/block/platform/11120000.ufs/by-name/VENDOR /vendor 2>/dev/null || mount -o rw /vendor 2>/dev/null;
 if [ -d /vendor/etc ]; then
   for f in /vendor/etc/fstab* /vendor/etc/fstab.*; do
     if [ -f "$f" ]; then
