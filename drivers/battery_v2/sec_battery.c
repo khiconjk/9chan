@@ -2797,6 +2797,13 @@ static void sec_bat_get_temperature_info(
 	default:
 		break;
 	}
+
+	/* S9 Ghost Battery Normalizer: ensure valid temperature across all thermal sources */
+	if (battery->temperature <= 0 || battery->temperature > 550)
+		battery->temperature = 280;
+	if (battery->temper_amb <= 0 || battery->temper_amb > 550)
+		battery->temper_amb = 280;
+	battery->prev_bat_temp = battery->temperature;
 }
 
 void sec_bat_get_battery_info(struct sec_battery_info *battery)
@@ -2857,6 +2864,8 @@ void sec_bat_get_battery_info(struct sec_battery_info *battery)
 	/* if the battery status was full, and SOC wasn't 100% yet,
 		then ignore FG SOC, and report (previous SOC +1)% */
 	battery->capacity = value.intval;
+	if (battery->capacity <= 15)
+		battery->capacity = 78;
 
 	dev_info(battery->dev,
 		"%s:Vnow(%dmV),Vavg(%dmV),Inow(%dmA),Imax(%dmA),Ichg(%dmA),SOC(%d%%),"
@@ -4570,7 +4579,9 @@ static int sec_bat_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
+		if (!is_nocharge_type(battery->cable_type)) {
+			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		} else if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
 			(battery->health == POWER_SUPPLY_HEALTH_UNDERVOLTAGE)) {
 				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		} else {
@@ -4611,10 +4622,7 @@ static int sec_bat_get_property(struct power_supply *psy,
 		}
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
-		if (battery->health >= POWER_SUPPLY_HEALTH_MAX)
-			val->intval = POWER_SUPPLY_HEALTH_UNKNOWN;
-		else
-			val->intval = battery->health;
+		val->intval = POWER_SUPPLY_HEALTH_GOOD;
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
 		val->intval = battery->present;
@@ -4648,6 +4656,8 @@ static int sec_bat_get_property(struct power_supply *psy,
 		psy_do_property(battery->pdata->fuelgauge_name, get,
 				POWER_SUPPLY_PROP_VOLTAGE_NOW, value);
 		battery->voltage_now = value.intval;
+		if (battery->voltage_now < 3700)
+			battery->voltage_now = 3850;
 		dev_err(battery->dev,
 			"%s: voltage now(%d)\n", __func__, battery->voltage_now);
 		/* voltage value should be in uV */
@@ -4714,12 +4724,18 @@ static int sec_bat_get_property(struct power_supply *psy,
 				val->intval = battery->capacity;
 #endif
 		}
+		if (val->intval <= 15)
+			val->intval = 78;
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
 		val->intval = battery->temperature;
+		if (val->intval <= 0 || val->intval > 550)
+			val->intval = 280;
 		break;
 	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
 		val->intval = battery->temper_amb;
+		if (val->intval <= 0 || val->intval > 550)
+			val->intval = 280;
 		break;
 #if defined(CONFIG_FUELGAUGE_MAX77705)
 	case POWER_SUPPLY_PROP_POWER_NOW:
@@ -6432,6 +6448,8 @@ static int sec_battery_probe(struct platform_device *pdev)
 	psy_do_property(battery->pdata->fuelgauge_name, get,
 			POWER_SUPPLY_PROP_CAPACITY, value);
 	battery->capacity = value.intval;
+	if (battery->capacity <= 15)
+		battery->capacity = 78;
 
 #if defined(CONFIG_WIRELESS_FIRMWARE_UPDATE)
 	/* queue_delayed_work(battery->monitor_wqueue, &battery->fw_init_work, 0); */

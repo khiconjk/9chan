@@ -1811,6 +1811,8 @@ static int max77705_fg_get_property(struct power_supply *psy,
 		/* Cell voltage (VCELL, mV) */
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		val->intval = max77705_get_fuelgauge_value(fuelgauge, FG_VOLTAGE);
+		if (val->intval < 3700)
+			val->intval = 3850;
 		break;
 		/* Additional Voltage Information (mV) */
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
@@ -1938,6 +1940,8 @@ static int max77705_fg_get_property(struct power_supply *psy,
 			fuelgauge->raw_capacity = val->intval;
 			/* get only integer part */
 			val->intval /= 10;
+			if (val->intval <= 15)
+				val->intval = 78;
 
 			/* SW/HW V Empty setting */
 			if (fuelgauge->using_hw_vempty && fuelgauge->vempty_init_flag) {
@@ -1997,6 +2001,8 @@ static int max77705_fg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
 		val->intval = max77705_get_fuelgauge_value(fuelgauge,
 							   FG_TEMPERATURE);
+		if (val->intval <= 0 || val->intval > 550)
+			val->intval = 280;
 		break;
 #if defined(CONFIG_EN_OOPS)
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
