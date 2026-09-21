@@ -37,8 +37,14 @@
 #define S9_BRCM_FACILITY_GPS_INTERFACE 1
 #define S9_BRCM_TYPE_MARKER_INT        0x5245ff02
 #define S9_BRCM_MSG_GPS_LOCATION       0x100
+#define S9_BRCM_MSG_GPS_STATUS         0x101
 #define S9_BRCM_MSG_GNSS_SV_STATUS     0x117
 #define S9_BRCM_MSG_GPS_NMEA           0x103
+
+#define S9_GPS_STATUS_SESSION_BEGIN    1
+#define S9_GPS_STATUS_SESSION_END      2
+#define S9_GPS_STATUS_ENGINE_ON        3
+#define S9_GPS_STATUS_ENGINE_OFF       4
 
 #define S9_GNSS_SV_FLAGS_USED_IN_FIX   0x0F
 
@@ -323,16 +329,31 @@ struct s9_broadcom_sv_pkt {
 	uint8_t  tail_pad[24];    /* total payload = 24 + 2016 + 24 = 2064 */
 } __packed;
 
-struct s9_broadcom_nmea_pkt {
-	uint32_t total_len;
+struct s9_broadcom_status_pkt {
+	uint32_t total_len;       /* 44 */
 	uint32_t marker_fac;      /* 0x5245ff02 */
-	uint32_t fac_id;          /* 1 */
+	uint32_t fac_id;          /* 1 = S9_BRCM_FACILITY_GPS_INTERFACE */
 	uint32_t marker_msg;      /* 0x5245ff02 */
-	uint32_t msg_id;          /* 0x103 = NMEA */
+	uint32_t msg_id;          /* 0x101 = S9_BRCM_MSG_GPS_STATUS */
+	uint64_t bytes_len;       /* 16 */
+
+	/* GpsStatus payload (16 bytes) */
+	uint64_t size;            /* 16 */
+	uint16_t status;          /* GPS_STATUS_* */
+	uint8_t  pad[6];
+} __packed;
+
+struct s9_broadcom_nmea_pkt {
+	uint32_t total_len;       /* 52 + aligned_len */
+	uint32_t marker_fac;      /* 0x5245ff02 */
+	uint32_t fac_id;          /* 1 = S9_BRCM_FACILITY_GPS_INTERFACE */
+	uint32_t marker_msg;      /* 0x5245ff02 */
+	uint32_t msg_id;          /* 0x103 = S9_BRCM_MSG_GPS_NMEA */
 	uint64_t ts_len;          /* 8 */
-	int64_t  timestamp;       /* ms */
+	int64_t  timestamp;       /* UTC ms */
 	uint32_t marker_int;      /* 0x5245ff02 */
-	int32_t  str_len;
+	int32_t  str_len;         /* string length */
+	uint64_t str_bytes_len;   /* 8-byte length prefix required by IpcIncomingMessage::ReadBytes(size_t) */
 	char     nmea[160];
 } __packed;
 
@@ -416,6 +437,21 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 	lon_jitter = (int32_t)(prandom_u32() % 9) - 4;
 	lat_e6 += lat_jitter;
 	lon_e6 += lon_jitter;
+
+	/* 0. Send Broadcom GpsStatus (0x101) GPS_STATUS_SESSION_BEGIN */
+	{
+		struct s9_broadcom_status_pkt st;
+		memset(&st, 0, sizeof(st));
+		st.total_len = sizeof(st);
+		st.marker_fac = S9_BRCM_TYPE_MARKER_INT;
+		st.fac_id = S9_BRCM_FACILITY_GPS_INTERFACE;
+		st.marker_msg = S9_BRCM_TYPE_MARKER_INT;
+		st.msg_id = S9_BRCM_MSG_GPS_STATUS;
+		st.bytes_len = 16;
+		st.size = 16;
+		st.status = S9_GPS_STATUS_SESSION_BEGIN;
+		s9_gnss_write_pipe(&st, sizeof(st));
+	}
 
 	/* 1. Build and send Broadcom GpsLocation packet (0x100) */
 	{
@@ -530,7 +566,7 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 
 		aligned_len = (len + 3) & ~3;
 		memset(&nmea_pkt, 0, sizeof(nmea_pkt));
-		nmea_pkt.total_len = 24 + 4 + aligned_len;
+		nmea_pkt.total_len = 52 + aligned_len;
 		nmea_pkt.marker_fac = S9_BRCM_TYPE_MARKER_INT;
 		nmea_pkt.fac_id = S9_BRCM_FACILITY_GPS_INTERFACE;
 		nmea_pkt.marker_msg = S9_BRCM_TYPE_MARKER_INT;
@@ -539,6 +575,7 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 		nmea_pkt.timestamp = cur_utc_ms;
 		nmea_pkt.marker_int = S9_BRCM_TYPE_MARKER_INT;
 		nmea_pkt.str_len = len;
+		nmea_pkt.str_bytes_len = (uint64_t)len;
 		memcpy(nmea_pkt.nmea, buf, len);
 
 		s9_gnss_write_pipe(&nmea_pkt, nmea_pkt.total_len);
@@ -589,7 +626,7 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 
 			aligned_len = (len + 3) & ~3;
 			memset(&nmea_pkt, 0, sizeof(nmea_pkt));
-			nmea_pkt.total_len = 24 + 4 + aligned_len;
+			nmea_pkt.total_len = 52 + aligned_len;
 			nmea_pkt.marker_fac = S9_BRCM_TYPE_MARKER_INT;
 			nmea_pkt.fac_id = S9_BRCM_FACILITY_GPS_INTERFACE;
 			nmea_pkt.marker_msg = S9_BRCM_TYPE_MARKER_INT;
@@ -598,6 +635,7 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 			nmea_pkt.timestamp = cur_utc_ms;
 			nmea_pkt.marker_int = S9_BRCM_TYPE_MARKER_INT;
 			nmea_pkt.str_len = len;
+			nmea_pkt.str_bytes_len = (uint64_t)len;
 			memcpy(nmea_pkt.nmea, buf, len);
 
 			s9_gnss_write_pipe(&nmea_pkt, nmea_pkt.total_len);
