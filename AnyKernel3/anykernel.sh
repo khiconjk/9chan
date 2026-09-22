@@ -51,11 +51,19 @@ if [ -d /vendor/etc ]; then
   for f in /vendor/etc/fstab* /vendor/etc/fstab.*; do
     if [ -f "$f" ]; then
       ui_print "  Patching $f...";
-      sed -i 's/forceencrypt=footer/encryptable=footer/g' "$f";
-      sed -i 's/fileencryption=[^,]*/encryptable/g' "$f";
+      sed -i 's/forceencrypt=footer,//g' "$f";
+      sed -i 's/encryptable=footer,//g' "$f";
+      sed -i 's/,forceencrypt=footer//g' "$f";
+      sed -i 's/,encryptable=footer//g' "$f";
+      sed -i 's/forceencrypt=footer//g' "$f";
+      sed -i 's/encryptable=footer//g' "$f";
+      sed -i 's/,length=-20480//g' "$f";
+      sed -i 's/length=-20480,//g' "$f";
+      sed -i 's/fileencryption=[^,]*,//g' "$f";
+      sed -i 's/fileencryption=[^,]*//g' "$f";
     fi
   done
-  for i in /vendor/etc/init/vk*.rc /vendor/etc/init/vaultkeeper* /vendor/etc/init/*wsm*; do
+  for i in /vendor/etc/init/vk*.rc /vendor/etc/init/vaultkeeper* /vendor/etc/init/*wsm* /vendor/etc/init/cass.rc /vendor/etc/init/pa_daemon*.rc; do
     if [ -f "$i" ]; then
       ui_print "  Disabling $i...";
       sed -i 's/^[^#].*$/# &/' "$i";
@@ -63,11 +71,14 @@ if [ -d /vendor/etc ]; then
   done
   for mf in /vendor/etc/vintf/manifest.xml /vendor/etc/vintf/manifest/vaultkeeper_manifest.xml; do
     if [ -f "$mf" ]; then
-      sed -i -e '/<hal format="hidl">/{N;/<name>vendor\.samsung.*\.security\.\(vaultkeeper\|wsm\)<\/name>/{:loop;N;/<\/hal>/!bloop;d}}' "$mf" 2>/dev/null;
+      sed -i -e '/<hal format="hidl">/{N;/<name>vendor\.samsung.*\.security\.\(vaultkeeper\|wsm\|proca\)<\/name>/{:loop;N;/<\/hal>/!bloop;d}}' "$mf" 2>/dev/null;
     fi
   done
   if [ -f /vendor/bin/vaultkeeperd ]; then
     chmod 0 /vendor/bin/vaultkeeperd 2>/dev/null;
+  fi
+  if [ -f /vendor/bin/cass ]; then
+    chmod 0 /vendor/bin/cass 2>/dev/null;
   fi
   ui_print "  Vendor patched successfully.";
 fi
