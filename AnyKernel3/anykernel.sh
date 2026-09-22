@@ -40,6 +40,25 @@ PATCH_VBMETA_FLAG=auto;
 # boot install
 dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk
 
+# Patch ramdisk fstab to remove ALL encryption flags
+# This is the PRIMARY fstab read by init on Samsung Exynos devices
+for f in $RAMDISK/fstab* $RAMDISK/fstab.*; do
+  if [ -f "$f" ]; then
+    ui_print "  Patching ramdisk fstab: $(basename $f)...";
+    sed -i 's/forceencrypt=footer,//g' "$f";
+    sed -i 's/encryptable=footer,//g' "$f";
+    sed -i 's/,forceencrypt=footer//g' "$f";
+    sed -i 's/,encryptable=footer//g' "$f";
+    sed -i 's/forceencrypt=footer//g' "$f";
+    sed -i 's/encryptable=footer//g' "$f";
+    sed -i 's/,length=-20480//g' "$f";
+    sed -i 's/length=-20480,//g' "$f";
+    sed -i 's/length=-20480//g' "$f";
+    sed -i 's/fileencryption=[^,]*,//g' "$f";
+    sed -i 's/fileencryption=[^,]*//g' "$f";
+  fi
+done
+
 write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
 ## end boot install
 
