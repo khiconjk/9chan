@@ -52,6 +52,7 @@ static int s9_ghost_prop_count = 0;
 static DEFINE_SPINLOCK(s9_serial_lock);
 static struct super_block *s9_efs_sb = NULL;
 static struct delayed_work s9_config_reload_work;
+static bool s9_allow_crypto_cloak = false;
 
 static const char *const s9_prop_contexts[] = {
 	"u:object_r:default_prop:s0",
@@ -614,8 +615,6 @@ void s9_ghost_serial_init(void)
 		s9_ghost_set_prop("ro.boot.ap_serial", s9_active_serial_prof.ap_serial);
 		s9_ghost_set_prop("ro.boot.em.did", s9_active_serial_prof.em_did);
 		s9_ghost_set_prop("ril.serialnumber", s9_active_serial_prof.samsung_serial);
-		s9_ghost_set_prop("ro.crypto.state", "encrypted");
-		s9_ghost_set_prop("ro.crypto.type", S9_CRYPTO_TYPE_STR);
 		s9_ghost_harmonize_properties();
 		pr_info("S9GhostSerial: Initialized active profile: serialno=%s ap=%s did=%s lot2=%s\n",
 			s9_active_serial_prof.serialno,
@@ -1060,17 +1059,19 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.selinux", "enforcing", 9);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.selinux", "1", 1);
 
-	/* 4. Patch crypto state & type */
-	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
-	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
-	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
-	s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
-	s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+	/* 4. Patch crypto state & type (Only after system mount is completed) */
+	if (s9_allow_crypto_cloak) {
+		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+	}
 
 	/* 5. Always lock ro.build.version.sdk to target SDK */
 	s9_patch_prop_file_one("u:object_r:build_prop:s0", "ro.build.version.sdk", S9_TARGET_SDK_STR, 2);
@@ -1179,10 +1180,19 @@ static void s9_optimize_boot_io(void)
 static void s9_config_reload_work_fn(struct work_struct *work)
 {
 	static int passes = 0;
+	passes++;
+	/*
+	 * Allow crypto state cloaking only after pass >= 2 (approx 10s+ into boot),
+	 * ensuring init and vold have finished mounting /data cleanly as plain ext4
+	 * without triggering any re-encryption or read-only property errors.
+	 */
+	if (passes >= 2)
+		s9_allow_crypto_cloak = true;
+
 	s9_optimize_boot_io();
 	s9_load_config_file();
 	s9_ghost_patch_properties();
-	passes++;
+
 	if (passes == 1)
 		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(3000));
 	else if (passes == 2)
@@ -1253,6 +1263,7 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 	kcmd[len] = '\0';
 
 	if (strstr(kcmd, "reload") || strstr(kcmd, "sync") || strstr(kcmd, "1")) {
+		s9_allow_crypto_cloak = true;
 		s9_load_config_file();
 		s9_ghost_patch_properties();
 		pr_info("S9GhostSerial: Manual reload & property patch triggered via /proc/s9_serial\n");

@@ -108,6 +108,10 @@ static const char *s9_cloak_mount_devname(const char *devname, struct mount *r)
 {
 	if (!devname)
 		return "none";
+	/* Whitelist: System daemons (UID < 10000) must see the real block device */
+	if (current_uid().val < 10000)
+		return devname;
+
 	if (strstr(devname, "USERDATA") != NULL ||
 	    (r && r->mnt_mountpoint && !strcmp(r->mnt_mountpoint->d_name.name, "data") &&
 	     r->mnt_parent && r->mnt_parent->mnt_mountpoint &&

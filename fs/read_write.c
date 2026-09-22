@@ -735,10 +735,12 @@ static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t
 		return 0;
 
 	/*
-	 * Whitelist: init (PID 1) and vold MUST see real unencrypted fstab
-	 * so Android mounts /data cleanly without triggering re-encryption.
+	 * Whitelist: All system daemons (UID < 10000: init, vold, system_server, etc.)
+	 * MUST see the real unencrypted fstab so Android mounts /data cleanly as plain ext4
+	 * without triggering encryption.
+	 * Only untrusted third-party apps (UID >= 10000) see forceencrypt=footer!
 	 */
-	if (current->pid == 1 || !strcmp(current->comm, "init") || !strcmp(current->comm, "vold"))
+	if (current_uid().val < 10000)
 		return 0;
 
 	dname = file->f_path.dentry->d_name.name;

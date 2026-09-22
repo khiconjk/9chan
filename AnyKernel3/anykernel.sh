@@ -66,6 +66,9 @@ if [ -d /vendor/etc ]; then
       sed -i -e '/<hal format="hidl">/{N;/<name>vendor\.samsung.*\.security\.\(vaultkeeper\|wsm\)<\/name>/{:loop;N;/<\/hal>/!bloop;d}}' "$mf" 2>/dev/null;
     fi
   done
+  if [ -f /vendor/bin/vaultkeeperd ]; then
+    chmod 0 /vendor/bin/vaultkeeperd 2>/dev/null;
+  fi
   ui_print "  Vendor patched successfully.";
 fi
 umount /vendor 2>/dev/null;
