@@ -2190,6 +2190,14 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
+	/* S9 Anti-Forceencrypt: Protect plaintext USERDATA partition from dm-crypt destruction */
+	if (argv[3] && (strstr(argv[3], "USERDATA") || strstr(argv[3], "sda25") || strstr(argv[3], "259:9"))) {
+		pr_warn("dm-crypt: Blocked encryption attempt on USERDATA (%s) to protect unencrypted data!\n", argv[3]);
+		ti->error = "USERDATA encryption disabled";
+		ret = -EPERM;
+		goto bad;
+	}
+
 	ret = -EINVAL;
 	if (sscanf(argv[4], "%llu%c", &tmpll, &dummy) != 1) {
 		ti->error = "Invalid device sector";

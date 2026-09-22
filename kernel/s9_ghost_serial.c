@@ -1059,7 +1059,8 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.selinux", "enforcing", 9);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.selinux", "1", 1);
 
-	/* 4. Patch crypto state & type (Only after system mount is completed) */
+	/* 4. Patch crypto state & type (DISABLED: Setting ro.crypto.state=encrypted globally triggers vold auto-encryption!) */
+#if 0
 	if (s9_allow_crypto_cloak) {
 		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
 		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
@@ -1072,6 +1073,7 @@ int s9_ghost_patch_properties(void)
 		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.state", "encrypted", 9);
 		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
 	}
+#endif
 
 	/* 5. Always lock ro.build.version.sdk to target SDK */
 	s9_patch_prop_file_one("u:object_r:build_prop:s0", "ro.build.version.sdk", S9_TARGET_SDK_STR, 2);
