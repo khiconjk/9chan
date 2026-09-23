@@ -1,5 +1,8 @@
-Samsung Galaxy S9 (SM-G960N) Official Kernel G960NKSU5FVE1
-Device: Samsung Galaxy S9 (starlte / SM-G960N)
-ROM: Samsung One UI 2.5 (Stock Android 10)
-Kernel: Linux 4.9.191
-Target SDK: 29
+ss-S9 kernel build
+Device: Samsung Galaxy S9 starlte / SM-G960N or SM-G960F
+ROM target: Samsung Stock Android 10 (One UI 2.5)
+Kernel base: Linux 4.9 (Ghost Uptime + Headless + All Patches)
+KernelSU: None (VANILLA Clean Kernel)
+SuSFS: None
+Target SDK lock: 29
+Compiler: Clang with AArch64 GNU binutils

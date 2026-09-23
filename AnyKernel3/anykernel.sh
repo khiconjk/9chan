@@ -4,7 +4,7 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=Samsung Galaxy S9 (SM-G960N) Stock Kernel
+kernel.string=ss-S9 Stock Android 10 VANILLA GHOST FULL (Ghost Uptime + Headless + Always-On)
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -40,24 +40,31 @@ PATCH_VBMETA_FLAG=auto;
 # boot install
 dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk
 
-# Patch ramdisk fstab to remove ALL encryption flags
-# This is the PRIMARY fstab read by init on Samsung Exynos devices
+# Patch ramdisk fstab: forceencrypt -> encryptable (keeps encryption flow working)
+# and add ro.crypto.state=unencrypted to default.prop
 for f in $RAMDISK/fstab* $RAMDISK/fstab.*; do
   if [ -f "$f" ]; then
     ui_print "  Patching ramdisk fstab: $(basename $f)...";
-    sed -i 's/forceencrypt=footer,//g' "$f";
-    sed -i 's/encryptable=footer,//g' "$f";
-    sed -i 's/,forceencrypt=footer//g' "$f";
-    sed -i 's/,encryptable=footer//g' "$f";
-    sed -i 's/forceencrypt=footer//g' "$f";
-    sed -i 's/encryptable=footer//g' "$f";
-    sed -i 's/,length=-20480//g' "$f";
-    sed -i 's/length=-20480,//g' "$f";
-    sed -i 's/length=-20480//g' "$f";
+    # Change forceencrypt to encryptable (don't remove - Android needs the flag for proper boot)
+    sed -i 's/forceencrypt=/encryptable=/g' "$f";
+    # Remove fileencryption flags
     sed -i 's/fileencryption=[^,]*,//g' "$f";
     sed -i 's/fileencryption=[^,]*//g' "$f";
   fi
 done
+
+# Add ro.crypto.state=unencrypted to default.prop to prevent vold from encrypting
+if [ -f "$RAMDISK/default.prop" ]; then
+  if ! grep -q 'ro.crypto.state' "$RAMDISK/default.prop"; then
+    ui_print "  Adding ro.crypto.state=unencrypted to default.prop...";
+    echo "" >> "$RAMDISK/default.prop";
+    echo "# Anti-forceencrypt: tell vold data is unencrypted" >> "$RAMDISK/default.prop";
+    echo "ro.crypto.state=unencrypted" >> "$RAMDISK/default.prop";
+  else
+    ui_print "  Patching ro.crypto.state in default.prop...";
+    sed -i 's/ro.crypto.state=.*/ro.crypto.state=unencrypted/g' "$RAMDISK/default.prop";
+  fi
+fi
 
 write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
 ## end boot install
@@ -80,26 +87,10 @@ if [ -d /vendor/etc ]; then
       sed -i 's/length=-20480,//g' "$f";
       sed -i 's/fileencryption=[^,]*,//g' "$f";
       sed -i 's/fileencryption=[^,]*//g' "$f";
+      sed -i 's/errors=panic/errors=continue/g' "$f";
     fi
   done
-  for i in /vendor/etc/init/vk*.rc /vendor/etc/init/vaultkeeper* /vendor/etc/init/*wsm* /vendor/etc/init/cass.rc /vendor/etc/init/pa_daemon*.rc; do
-    if [ -f "$i" ]; then
-      ui_print "  Disabling $i...";
-      sed -i 's/^[^#].*$/# &/' "$i";
-    fi
-  done
-  for mf in /vendor/etc/vintf/manifest.xml /vendor/etc/vintf/manifest/vaultkeeper_manifest.xml; do
-    if [ -f "$mf" ]; then
-      sed -i -e '/<hal format="hidl">/{N;/<name>vendor\.samsung.*\.security\.\(vaultkeeper\|wsm\|proca\)<\/name>/{:loop;N;/<\/hal>/!bloop;d}}' "$mf" 2>/dev/null;
-    fi
-  done
-  if [ -f /vendor/bin/vaultkeeperd ]; then
-    chmod 0 /vendor/bin/vaultkeeperd 2>/dev/null;
-  fi
-  if [ -f /vendor/bin/cass ]; then
-    chmod 0 /vendor/bin/cass 2>/dev/null;
-  fi
-  ui_print "  Vendor patched successfully.";
+  ui_print "  Vendor fstab patched successfully.";
 fi
 umount /vendor 2>/dev/null;
 

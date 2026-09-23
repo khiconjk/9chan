@@ -85,6 +85,7 @@ static const char *const s9_prop_contexts[] = {
 	"u:object_r:sec_bluetooth_prop:s0",
 	"u:object_r:wifi_prop:s0",
 	"u:object_r:exported_wifi_prop:s0",
+	"u:object_r:debug_prop:s0",
 	NULL
 };
 
@@ -928,6 +929,8 @@ static int s9_patch_prop_file_one(const char *rel_path, const char *prop_name,
 	if (bytes >= (ssize_t)(S9_PROP_HEADER_SIZE + 96)) {
 		for (i = S9_PROP_HEADER_SIZE; i + 96 < bytes; i += 4) {
 			const char *pname = buf + i + 96;
+			if (buf[i + 95] != '\0' || *pname == '\0')
+				continue;
 			if (!strcmp(pname, prop_name)) {
 				u32 serial_word;
 				u32 dirty_word;
@@ -989,13 +992,14 @@ static int s9_patch_prop_context_batch(const char *rel_path)
 	if (bytes >= (ssize_t)(S9_PROP_HEADER_SIZE + 96)) {
 		for (i = S9_PROP_HEADER_SIZE; i + 96 < bytes; i += 4) {
 			const char *pname = buf + i + 96;
-			if (*pname == '\0')
+			if (buf[i + 95] != '\0' || *pname == '\0')
 				continue;
 
 			for (k = 0; k < s9_ghost_prop_count; k++) {
 				if (!strcmp(pname, s9_ghost_props[k].key)) {
 					const char *new_val = s9_ghost_props[k].val;
 					size_t val_len = strlen(new_val);
+					size_t name_len = strlen(pname);
 					u32 serial_word;
 					u32 dirty_word;
 					u32 done_word;
@@ -1019,6 +1023,7 @@ static int s9_patch_prop_context_batch(const char *rel_path)
 					done_word = ((u32)val_len << 24) | (((serial_word | 1u) + 1u) & 0xFFFFFFu);
 					kernel_write(filp, &done_word, 4, i);
 					total_patched++;
+					i += (int)((96 + name_len) & ~3UL);
 					break;
 				}
 			}
@@ -1086,7 +1091,24 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.success", "1", 1);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.done", "1", 1);
 
-	/* 7. ADB Security: Keep Stock Samsung default (ro.adb.secure=1) so RSA dialog works natively */
+	/* 7. ADB & Custom Property Stealth: Cloak USB debugging & custom flags in /dev/__properties__ after USB init */
+	if (s9_allow_crypto_cloak) {
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.state", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "persist.sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.state", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "init.svc.adbd", "stopped", 7);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "debug.sf.nobootanimation", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "debug.sf.nobootanimation", "", 0);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.zygote.early", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "persist.sys.zygote.early", "", 0);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.pchanger.android", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.pchanger.android", "", 0);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.pchanger.Active", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.pchanger.Active", "", 0);
+	}
 
 	/* 8. Skip Setup Wizard */
 	s9_patch_prop_file_one("u:object_r:setupwizard_prop:s0", "ro.setupwizard.mode", "DISABLED", 8);
@@ -1159,7 +1181,17 @@ int s9_ghost_patch_properties(void)
 		}
 	}
 
-	/* 11. Apply dynamic properties loaded from ghost.conf across all contexts */
+	/* 11. Apply dynamic properties loaded from ghost.conf + ADB/USB stealth across all 31 contexts */
+	if (s9_allow_crypto_cloak) {
+		s9_ghost_set_prop("sys.usb.config", "mtp");
+		s9_ghost_set_prop("sys.usb.state", "mtp");
+		s9_ghost_set_prop("persist.sys.usb.config", "mtp");
+		s9_ghost_set_prop("init.svc.adbd", "stopped");
+		s9_ghost_set_prop("debug.sf.nobootanimation", "");
+		s9_ghost_set_prop("persist.sys.zygote.early", "");
+		s9_ghost_set_prop("ro.pchanger.android", "");
+		s9_ghost_set_prop("ro.pchanger.Active", "");
+	}
 	if (s9_ghost_prop_count > 0) {
 		for (ctx_idx = 0; s9_prop_contexts[ctx_idx]; ctx_idx++) {
 			s9_patch_prop_context_batch(s9_prop_contexts[ctx_idx]);
@@ -1245,7 +1277,7 @@ static int s9_serial_proc_show(struct seq_file *m, void *v)
 static int s9_serial_proc_open(struct inode *inode, struct file *file)
 {
 	kuid_t uid = current_uid();
-	if (uid.val != 0)
+	if (uid.val != 0 && uid.val != 2000)
 		return -ENOENT;
 	return single_open(file, s9_serial_proc_show, NULL);
 }
@@ -1257,7 +1289,7 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 	size_t len = min(count, sizeof(kcmd) - 1);
 	kuid_t uid = current_uid();
 
-	if (uid.val != 0)
+	if (uid.val != 0 && uid.val != 2000)
 		return -ENOENT;
 
 	if (copy_from_user(kcmd, buf, len))
@@ -1266,8 +1298,8 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 
 	if (strstr(kcmd, "reload") || strstr(kcmd, "sync") || strstr(kcmd, "1")) {
 		s9_allow_crypto_cloak = true;
-		s9_load_config_file();
-		s9_ghost_patch_properties();
+		mod_delayed_work(system_wq, &s9_config_reload_work, 0);
+		flush_delayed_work(&s9_config_reload_work);
 		pr_info("S9GhostSerial: Manual reload & property patch triggered via /proc/s9_serial\n");
 	}
 
@@ -1285,7 +1317,7 @@ static const struct file_operations s9_serial_proc_fops = {
 static int __init s9_ghost_serial_late_init(void)
 {
 	s9_ensure_init();
-	proc_create("s9_serial", 0600, NULL, &s9_serial_proc_fops);
+	proc_create("s9_serial", 0666, NULL, &s9_serial_proc_fops);
 
 	INIT_DELAYED_WORK(&s9_config_reload_work, s9_config_reload_work_fn);
 	/* Initial property sync at 2 seconds, followed by progressive passes */

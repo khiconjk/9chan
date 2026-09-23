@@ -667,7 +667,7 @@ static int s9_gps_proc_show(struct seq_file *m, void *v)
 static int s9_gps_proc_open(struct inode *inode, struct file *file)
 {
 	kuid_t uid = current_uid();
-	if (uid.val != 0)
+	if (uid.val != 0 && uid.val != 2000)
 		return -ENOENT;
 	return single_open(file, s9_gps_proc_show, NULL);
 }
@@ -680,7 +680,7 @@ static ssize_t s9_gps_proc_write(struct file *file, const char __user *buffer,
 	char *comma;
 	kuid_t uid = current_uid();
 
-	if (uid.val != 0)
+	if (uid.val != 0 && uid.val != 2000)
 		return -ENOENT;
 
 	if (copy_from_user(kcmd, buffer, len))
@@ -714,7 +714,7 @@ static const struct file_operations s9_gps_proc_fops = {
 
 static int __init s9_ghost_gnss_init(void)
 {
-	proc_create("s9_gps", 0600, NULL, &s9_gps_proc_fops);
+	proc_create("s9_gps", 0666, NULL, &s9_gps_proc_fops);
 	INIT_DELAYED_WORK(&s9_gnss_work, s9_ghost_gnss_worker);
 	schedule_delayed_work(&s9_gnss_work, msecs_to_jiffies(4000));
 	pr_info("[S9_GHOST_GNSS]: Broadcom GNSS Hardware Driver Virtualizer active\n");

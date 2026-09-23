@@ -771,22 +771,6 @@ static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t
 		}
 	}
 
-	p = kbuf;
-	while ((p = strstr(p, "wait,check,quota")) != NULL) {
-		size_t tail_len = strlen(p + 16);
-		const char *rep = "wait,check,forceencrypt=footer,quota";
-		size_t rep_len = 36;
-		size_t diff = rep_len - 16;
-		if (cur_len + diff <= count) {
-			memmove(p + rep_len, p + 16, tail_len + 1);
-			memcpy(p, rep, rep_len);
-			p += rep_len;
-			cur_len += diff;
-			delta += diff;
-		} else {
-			break;
-		}
-	}
 
 	if (delta > 0) {
 		if (!copy_to_user(buf, kbuf, cur_len)) {
