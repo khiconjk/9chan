@@ -461,88 +461,11 @@ static inline void verity_bv_skip_block(struct dm_verity *v,
  */
 static int verity_verify_io(struct dm_verity_io *io)
 {
-	bool is_zero;
 	struct dm_verity *v = io->v;
-	struct bvec_iter start;
 	unsigned b;
 
 	for (b = 0; b < io->n_blocks; b++) {
-		int r;
-		sector_t cur_block = io->block + b;
-		struct shash_desc *desc = verity_io_hash_desc(v, io);
-
-		if (v->validated_blocks &&
-		    likely(test_bit(cur_block, v->validated_blocks))) {
-			verity_bv_skip_block(v, io, &io->iter);
-#ifdef SEC_HEX_DEBUG
-			add_skipped_blks();
-#endif
-			continue;
-		}
-
-		r = verity_hash_for_block(v, io, cur_block,
-					  verity_io_want_digest(v, io),
-					  &is_zero);
-		if (unlikely(r < 0))
-			return r;
-
-		if (is_zero) {
-			/*
-			 * If we expect a zero block, don't validate, just
-			 * return zeros.
-			 */
-			r = verity_for_bv_block(v, io, &io->iter,
-						verity_bv_zero);
-			if (unlikely(r < 0))
-				return r;
-
-			continue;
-		}
-
-		r = verity_hash_init(v, desc);
-		if (unlikely(r < 0))
-			return r;
-
-		start = io->iter;
-		r = verity_for_bv_block(v, io, &io->iter, verity_bv_hash_update);
-		if (unlikely(r < 0))
-			return r;
-
-		r = verity_hash_final(v, desc, verity_io_real_digest(v, io));
-		if (unlikely(r < 0))
-			return r;
-
-		if (likely(memcmp(verity_io_real_digest(v, io),
-				  verity_io_want_digest(v, io), v->digest_size) == 0)) {
-			if (v->validated_blocks)
-				set_bit(cur_block, v->validated_blocks);
-
-#ifdef DMV_ALTA
-			set_bit(io->block + b, (volatile unsigned long *)io->v->verity_bitmap);
-#endif
-			continue;
-		}
-		else if (verity_fec_decode(v, io, DM_VERITY_BLOCK_TYPE_DATA,
-					   cur_block, NULL, &start) == 0) {
-#ifdef SEC_HEX_DEBUG
-			add_fec_correct_blks();
-			add_fc_blks_entry(cur_block,v->data_dev->name);
-#endif
-			continue;
-		}
-		else
-#ifdef SEC_HEX_DEBUG
-			r = verity_handle_err_hex_debug(v, DM_VERITY_BLOCK_TYPE_DATA, cur_block, io, &start);
-#else
-			r = verity_handle_err(v, DM_VERITY_BLOCK_TYPE_DATA, cur_block);
-#endif
-		if (r) {
-#if defined(CONFIG_TZ_ICCC)
-			pr_err("ICCC smc ret = %llu\n",
-				(unsigned long long)exynos_smc(SMC_CMD_DMV_WRITE_STATUS, 1, 0, 0));
-#endif
-			return -EIO;
-		}
+		verity_bv_skip_block(v, io, &io->iter);
 	}
 
 	return 0;

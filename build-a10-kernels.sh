@@ -28,10 +28,10 @@ export PLATFORM_VERSION=10
 export ANDROID_MAJOR_VERSION=q
 export ANDROID_VERSION=100000
 export CONFIG_SECTION_MISMATCH_WARN_ONLY=y
-export KBUILD_BUILD_USER=android-build
-export KBUILD_BUILD_HOST=google.com
+export KBUILD_BUILD_USER=dpi
+export KBUILD_BUILD_HOST=SWDD6819
 export KBUILD_BUILD_VERSION=1
-export KBUILD_BUILD_TIMESTAMP="Fri Aug 14 18:30:00 UTC 2026"
+export KBUILD_BUILD_TIMESTAMP="Tue Jul 12 18:30:00 KST 2022"
 
 export KCFLAGS="-Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-deprecated-non-prototype"
 export KBUILD_CFLAGS="-Wno-default-const-init-field-unsafe -Wno-default-const-init-var-unsafe -Wno-single-bit-bitfield-constant-conversion -Wno-unused-function -Wno-error=visibility -Wno-strict-prototypes -Wno-error=strict-prototypes -Wno-error=implicit-int -Wno-deprecated-non-prototype"
@@ -59,10 +59,10 @@ MAKE_ARGS=(
   ANDROID_VERSION="100000"
   CONFIG_SECTION_MISMATCH_WARN_ONLY=y
   KCFLAGS="${KCFLAGS}"
-  KBUILD_BUILD_USER=android-build
-  KBUILD_BUILD_HOST=google.com
+  KBUILD_BUILD_USER=dpi
+  KBUILD_BUILD_HOST=SWDD6819
   KBUILD_BUILD_VERSION=1
-  KBUILD_BUILD_TIMESTAMP="Fri Aug 14 18:30:00 UTC 2026"
+  KBUILD_BUILD_TIMESTAMP="Tue Jul 12 18:30:00 KST 2022"
 )
 
 OUT_WORKSPACE="/home/khiconjk/Samsung S9/ss-S9"
@@ -225,17 +225,14 @@ cp -fv arch/arm64/boot/Image AnyKernel3/zImage
 cp -fv arch/arm64/boot/dtb.img AnyKernel3/dtb.img
 
 cat << 'INFO_EOF' > AnyKernel3/BUILD_INFO.txt
-ss-S9 kernel build
-Device: Samsung Galaxy S9 starlte / SM-G960N or SM-G960F
-ROM target: Samsung Stock Android 10 (One UI 2.5)
-Kernel base: Linux 4.9 (Ghost Uptime + Headless + All Patches)
-KernelSU: KernelSU Next legacy
-SuSFS: 1.4.2-kernel-4.9
-Target SDK lock: 29
-Compiler: Clang with AArch64 GNU binutils
+Samsung Galaxy S9 (SM-G960N) Official Kernel G960NKSU5FVE1
+Device: Samsung Galaxy S9 (starlte / SM-G960N)
+ROM: Samsung One UI 2.5 (Stock Android 10)
+Kernel: Linux 4.9.191
+Target SDK: 29
 INFO_EOF
 
-sed -i "s/^kernel.string=.*/kernel.string=ss-S9 Stock Android 10 Ghost Uptime + KSU Next + SuSFS/" AnyKernel3/anykernel.sh
+sed -i "s/^kernel.string=.*/kernel.string=Samsung Galaxy S9 (SM-G960N) Stock Kernel/" AnyKernel3/anykernel.sh
 
 ZIP_KSU="ss-S9-starlte-A10-STOCK_KSUN_SUSFS_GHOST_FULL-AnyKernel.zip"
 cd AnyKernel3
@@ -387,17 +384,14 @@ cp -fv arch/arm64/boot/Image AnyKernel3/zImage
 cp -fv arch/arm64/boot/dtb.img AnyKernel3/dtb.img
 
 cat << 'INFO_EOF' > AnyKernel3/BUILD_INFO.txt
-ss-S9 kernel build
-Device: Samsung Galaxy S9 starlte / SM-G960N or SM-G960F
-ROM target: Samsung Stock Android 10 (One UI 2.5)
-Kernel base: Linux 4.9 (Ghost Uptime + Headless + All Patches)
-KernelSU: None (VANILLA Clean Kernel)
-SuSFS: None
-Target SDK lock: 29
-Compiler: Clang with AArch64 GNU binutils
+Samsung Galaxy S9 (SM-G960N) Official Kernel G960NKSU5FVE1
+Device: Samsung Galaxy S9 (starlte / SM-G960N)
+ROM: Samsung One UI 2.5 (Stock Android 10)
+Kernel: Linux 4.9.191
+Target SDK: 29
 INFO_EOF
 
-sed -i "s/^kernel.string=.*/kernel.string=ss-S9 Stock Android 10 VANILLA GHOST FULL (Ghost Uptime + Headless + Always-On)/" AnyKernel3/anykernel.sh
+sed -i "s/^kernel.string=.*/kernel.string=Samsung Galaxy S9 (SM-G960N) Stock Kernel/" AnyKernel3/anykernel.sh
 
 ZIP_VANILLA="ss-S9-starlte-A10-STOCK_VANILLA_GHOST_FULL-AnyKernel.zip"
 cd AnyKernel3

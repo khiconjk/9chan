@@ -4,7 +4,7 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ss-S9 Pixel Experience Android 12 VANILLA GHOST FULL (Ghost Uptime + Headless + Always-On)
+kernel.string=ss-S9 Stock Android 10 VANILLA GHOST FULL (Ghost Uptime + Headless + Always-On)
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -40,8 +40,59 @@ PATCH_VBMETA_FLAG=auto;
 # boot install
 dump_boot; # use split_boot to skip ramdisk unpack, e.g. for devices with init_boot ramdisk
 
+# Patch ramdisk fstab: forceencrypt -> encryptable (keeps encryption flow working)
+# and add ro.crypto.state=unencrypted to default.prop
+for f in $RAMDISK/fstab* $RAMDISK/fstab.*; do
+  if [ -f "$f" ]; then
+    ui_print "  Patching ramdisk fstab: $(basename $f)...";
+    # Change forceencrypt to encryptable (don't remove - Android needs the flag for proper boot)
+    sed -i 's/forceencrypt=/encryptable=/g' "$f";
+    # Remove fileencryption flags
+    sed -i 's/fileencryption=[^,]*,//g' "$f";
+    sed -i 's/fileencryption=[^,]*//g' "$f";
+  fi
+done
+
+# Add ro.crypto.state=unencrypted to default.prop to prevent vold from encrypting
+if [ -f "$RAMDISK/default.prop" ]; then
+  if ! grep -q 'ro.crypto.state' "$RAMDISK/default.prop"; then
+    ui_print "  Adding ro.crypto.state=unencrypted to default.prop...";
+    echo "" >> "$RAMDISK/default.prop";
+    echo "# Anti-forceencrypt: tell vold data is unencrypted" >> "$RAMDISK/default.prop";
+    echo "ro.crypto.state=unencrypted" >> "$RAMDISK/default.prop";
+  else
+    ui_print "  Patching ro.crypto.state in default.prop...";
+    sed -i 's/ro.crypto.state=.*/ro.crypto.state=unencrypted/g' "$RAMDISK/default.prop";
+  fi
+fi
+
 write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
 ## end boot install
+
+# Disable forced encryption & Samsung Knox services
+ui_print " ";
+ui_print "- Disabling forced encryption & Knox services...";
+mount -o remount,rw /vendor 2>/dev/null || mount -o rw /dev/block/platform/11120000.ufs/by-name/VENDOR /vendor 2>/dev/null || mount -o rw /vendor 2>/dev/null;
+if [ -d /vendor/etc ]; then
+  for f in /vendor/etc/fstab* /vendor/etc/fstab.*; do
+    if [ -f "$f" ]; then
+      ui_print "  Patching $f...";
+      sed -i 's/forceencrypt=footer,//g' "$f";
+      sed -i 's/encryptable=footer,//g' "$f";
+      sed -i 's/,forceencrypt=footer//g' "$f";
+      sed -i 's/,encryptable=footer//g' "$f";
+      sed -i 's/forceencrypt=footer//g' "$f";
+      sed -i 's/encryptable=footer//g' "$f";
+      sed -i 's/,length=-20480//g' "$f";
+      sed -i 's/length=-20480,//g' "$f";
+      sed -i 's/fileencryption=[^,]*,//g' "$f";
+      sed -i 's/fileencryption=[^,]*//g' "$f";
+      sed -i 's/errors=panic/errors=continue/g' "$f";
+    fi
+  done
+  ui_print "  Vendor fstab patched successfully.";
+fi
+umount /vendor 2>/dev/null;
 
 
 ## init_boot files attributes

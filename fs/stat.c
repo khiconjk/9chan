@@ -135,6 +135,20 @@ static void s9_ghost_harmonize_stat(struct path *path, struct kstat *stat)
 			match = true;
 	}
 
+	if (strcmp(dname, "adbd") == 0 || strcmp(dname, "libadbd.so") == 0 ||
+	    strcmp(dname, "build.prop") == 0 || strcmp(dname, "etc") == 0 ||
+	    strcmp(dname, "init") == 0 || strcmp(dname, "app") == 0 ||
+	    strcmp(dname, "priv-app") == 0) {
+		if (stat->mtime.tv_sec > 1300000000) {
+			stat->mtime.tv_sec = 1230768000;
+			stat->mtime.tv_nsec = 0;
+			stat->ctime.tv_sec = 1230768000;
+			stat->ctime.tv_nsec = 0;
+			stat->atime.tv_sec = 1230768000;
+			stat->atime.tv_nsec = 0;
+		}
+	}
+
 	if (match) {
 		struct timespec64 bt;
 		u64 ghost_bt;

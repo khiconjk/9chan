@@ -52,6 +52,7 @@ static int s9_ghost_prop_count = 0;
 static DEFINE_SPINLOCK(s9_serial_lock);
 static struct super_block *s9_efs_sb = NULL;
 static struct delayed_work s9_config_reload_work;
+static bool s9_allow_crypto_cloak = false;
 
 static const char *const s9_prop_contexts[] = {
 	"u:object_r:default_prop:s0",
@@ -84,6 +85,7 @@ static const char *const s9_prop_contexts[] = {
 	"u:object_r:sec_bluetooth_prop:s0",
 	"u:object_r:wifi_prop:s0",
 	"u:object_r:exported_wifi_prop:s0",
+	"u:object_r:debug_prop:s0",
 	NULL
 };
 
@@ -333,6 +335,83 @@ static void s9_ghost_harmonize_properties(void)
 		s9_ghost_set_prop("ro.boot.em.did", s9_active_serial_prof.em_did);
 	if (s9_active_serial_prof.samsung_serial[0])
 		s9_ghost_set_prop("ril.serialnumber", s9_active_serial_prof.samsung_serial);
+
+	/* 8. Telephony & Carrier harmonization ("Có SIM nhưng không có sóng / Unknown") */
+	{
+		const char *c_name = s9_ghost_get_prop("carrier_provider_name");
+		const char *c_code = s9_ghost_get_prop("carrier_provider_code");
+		if (!c_name)
+			c_name = s9_ghost_get_prop("gsm.operator.alpha");
+		if (!c_code)
+			c_code = s9_ghost_get_prop("gsm.operator.numeric");
+
+		if (!c_name || !*c_name || !c_code || !*c_code) {
+			s9_ghost_set_prop("gsm.sim.state", "LOADED");
+			s9_ghost_set_prop("vendor.gsm.sim.state", "LOADED");
+			s9_ghost_set_prop("gsm.network.type", "Unknown");
+			s9_ghost_set_prop("vendor.gsm.network.type", "Unknown");
+			s9_ghost_set_prop("gsm.voice.network.type", "Unknown");
+			s9_ghost_set_prop("gsm.data.network.type", "Unknown");
+			s9_ghost_set_prop("gsm.operator.alpha", "");
+			s9_ghost_set_prop("gsm.sim.operator.alpha", "");
+			s9_ghost_set_prop("gsm.operator.numeric", "");
+			s9_ghost_set_prop("gsm.sim.operator.numeric", "");
+			s9_ghost_set_prop("gsm.sim.gsmoperator.numeric", "");
+			s9_ghost_set_prop("gsm.operator.iso-country", "");
+			s9_ghost_set_prop("gsm.sim.operator.iso-country", "");
+			s9_ghost_set_prop("gsm.operator.isroaming", "false");
+			s9_ghost_set_prop("ril.simoperator", "");
+			s9_ghost_set_prop("ril.epdg.currenMno", "");
+			s9_ghost_set_prop("ril.wfc.default_spn", "");
+			s9_ghost_set_prop("gsm.STK_SETUP_MENU", "");
+		} else {
+			/* Có nhà mạng và có mã mạng -> In-Service / LTE / Connected */
+			char epdg_buf[64];
+			const char *net_type = s9_ghost_get_prop("gsm.network.type");
+			if (!net_type || !*net_type || !strcmp(net_type, "Unknown")) {
+				s9_ghost_set_prop("gsm.network.type", "LTE");
+				s9_ghost_set_prop("vendor.gsm.network.type", "LTE");
+				s9_ghost_set_prop("gsm.voice.network.type", "LTE");
+				s9_ghost_set_prop("gsm.data.network.type", "LTE");
+			}
+			s9_ghost_set_prop("gsm.sim.state", "LOADED");
+			s9_ghost_set_prop("vendor.gsm.sim.state", "LOADED");
+			s9_ghost_set_prop("gsm.operator.alpha", c_name);
+			s9_ghost_set_prop("gsm.sim.operator.alpha", c_name);
+			s9_ghost_set_prop("gsm.operator.numeric", c_code);
+			s9_ghost_set_prop("gsm.sim.operator.numeric", c_code);
+			s9_ghost_set_prop("gsm.sim.gsmoperator.numeric", c_code);
+			s9_ghost_set_prop("gsm.operator.isroaming", "false");
+			s9_ghost_set_prop("ril.simoperator", c_code);
+			s9_ghost_set_prop("ril.wfc.default_spn", c_name);
+
+			/* Derive ISO Country from MCC (e.g. 452 -> vn) */
+			if (!strncmp(c_code, "452", 3)) {
+				s9_ghost_set_prop("gsm.operator.iso-country", "vn");
+				s9_ghost_set_prop("gsm.sim.operator.iso-country", "vn");
+			} else if (!strncmp(c_code, "450", 3)) {
+				s9_ghost_set_prop("gsm.operator.iso-country", "kr");
+				s9_ghost_set_prop("gsm.sim.operator.iso-country", "kr");
+			} else if (!strncmp(c_code, "310", 3) || !strncmp(c_code, "311", 3)) {
+				s9_ghost_set_prop("gsm.operator.iso-country", "us");
+				s9_ghost_set_prop("gsm.sim.operator.iso-country", "us");
+			} else {
+				const char *iso = s9_ghost_get_prop("ro.csc.countryiso_code");
+				if (iso && *iso) {
+					char iso_lower[8];
+					int j;
+					for (j = 0; j < sizeof(iso_lower) - 1 && iso[j]; j++)
+						iso_lower[j] = tolower(iso[j]);
+					iso_lower[j] = '\0';
+					s9_ghost_set_prop("gsm.operator.iso-country", iso_lower);
+					s9_ghost_set_prop("gsm.sim.operator.iso-country", iso_lower);
+				}
+			}
+
+			snprintf(epdg_buf, sizeof(epdg_buf), "%s_VN", c_name);
+			s9_ghost_set_prop("ril.epdg.currenMno", epdg_buf);
+		}
+	}
 }
 
 static bool s9_parse_mac_address(const char *str, u8 *bytes)
@@ -413,6 +492,15 @@ static void s9_load_config_file(void)
 								       *(v_end - 1) == '\r'))
 							*(--v_end) = '\0';
 					}
+					/* Strip surrounding quotes if present */
+					if ((val[0] == '"' && val[strlen(val) - 1] == '"') ||
+					    (val[0] == '\'' && val[strlen(val) - 1] == '\'')) {
+						size_t qlen = strlen(val);
+						if (qlen >= 2) {
+							val[qlen - 1] = '\0';
+							val++;
+						}
+					}
 
 					/* 1. Hardware & Serial Identifiers */
 					if ((!strcasecmp(key, "serialno") || !strcasecmp(key, "serial_no") ||
@@ -462,6 +550,20 @@ static void s9_load_config_file(void)
 						s9_ghost_set_prop("__ghost_gps_lon", val);
 					} else if (!strcasecmp(key, "ghost_gps.alt") || !strcasecmp(key, "gps.alt")) {
 						s9_ghost_set_prop("__ghost_gps_alt", val);
+					} else if (!strcasecmp(key, "carrier_provider_name") || !strcasecmp(key, "carrier_name")) {
+						s9_ghost_set_prop("carrier_provider_name", val);
+						s9_ghost_set_prop("gsm.operator.alpha", val);
+						s9_ghost_set_prop("gsm.sim.operator.alpha", val);
+					} else if (!strcasecmp(key, "carrier_provider_code") || !strcasecmp(key, "carrier_code") || !strcasecmp(key, "mcc_mnc")) {
+						s9_ghost_set_prop("carrier_provider_code", val);
+						s9_ghost_set_prop("gsm.operator.numeric", val);
+						s9_ghost_set_prop("gsm.sim.operator.numeric", val);
+						s9_ghost_set_prop("gsm.sim.gsmoperator.numeric", val);
+						if (!val || !val[0]) {
+							s9_ghost_set_prop("gsm.operator.iso-country", "");
+							s9_ghost_set_prop("gsm.sim.operator.iso-country", "");
+							s9_ghost_set_prop("ril.simoperator", "");
+						}
 					} else {
 						/* 2. Generic system properties (ro.*, gsm.*, persist.*, sys.*, etc.) */
 						s9_ghost_set_prop(key, val);
@@ -824,9 +926,11 @@ static int s9_patch_prop_file_one(const char *rel_path, const char *prop_name,
 	}
 
 	bytes = kernel_read(filp, 0, buf, S9_PROP_AREA_SIZE);
-	if (bytes >= (ssize_t)(S9_PROP_HEADER_SIZE + 96 + val_len)) {
-		for (i = S9_PROP_HEADER_SIZE; i + 96 + val_len < bytes; i += 4) {
+	if (bytes >= (ssize_t)(S9_PROP_HEADER_SIZE + 96)) {
+		for (i = S9_PROP_HEADER_SIZE; i + 96 < bytes; i += 4) {
 			const char *pname = buf + i + 96;
+			if (buf[i + 95] != '\0' || *pname == '\0')
+				continue;
 			if (!strcmp(pname, prop_name)) {
 				u32 serial_word;
 				u32 dirty_word;
@@ -842,7 +946,8 @@ static int s9_patch_prop_file_one(const char *rel_path, const char *prop_name,
 
 				/* Step 2: Write new value (zero-padded) */
 				memset(clean_val, 0, sizeof(clean_val));
-				memcpy(clean_val, new_val, min_t(size_t, val_len, sizeof(clean_val) - 1));
+				if (val_len > 0 && new_val)
+					memcpy(clean_val, new_val, min_t(size_t, val_len, sizeof(clean_val) - 1));
 				kernel_write(filp, clean_val, sizeof(clean_val), i + 4);
 				smp_wmb();
 
@@ -887,13 +992,14 @@ static int s9_patch_prop_context_batch(const char *rel_path)
 	if (bytes >= (ssize_t)(S9_PROP_HEADER_SIZE + 96)) {
 		for (i = S9_PROP_HEADER_SIZE; i + 96 < bytes; i += 4) {
 			const char *pname = buf + i + 96;
-			if (*pname == '\0')
+			if (buf[i + 95] != '\0' || *pname == '\0')
 				continue;
 
 			for (k = 0; k < s9_ghost_prop_count; k++) {
 				if (!strcmp(pname, s9_ghost_props[k].key)) {
 					const char *new_val = s9_ghost_props[k].val;
 					size_t val_len = strlen(new_val);
+					size_t name_len = strlen(pname);
 					u32 serial_word;
 					u32 dirty_word;
 					u32 done_word;
@@ -908,7 +1014,8 @@ static int s9_patch_prop_context_batch(const char *rel_path)
 
 					/* Step 2: Write new value (zero-padded) */
 					memset(clean_val, 0, sizeof(clean_val));
-					memcpy(clean_val, new_val, min_t(size_t, val_len, sizeof(clean_val) - 1));
+					if (val_len > 0 && new_val)
+						memcpy(clean_val, new_val, min_t(size_t, val_len, sizeof(clean_val) - 1));
 					kernel_write(filp, clean_val, sizeof(clean_val), i + 4);
 					smp_wmb();
 
@@ -916,6 +1023,7 @@ static int s9_patch_prop_context_batch(const char *rel_path)
 					done_word = ((u32)val_len << 24) | (((serial_word | 1u) + 1u) & 0xFFFFFFu);
 					kernel_write(filp, &done_word, 4, i);
 					total_patched++;
+					i += (int)((96 + name_len) & ~3UL);
 					break;
 				}
 			}
@@ -956,13 +1064,21 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.selinux", "enforcing", 9);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.selinux", "1", 1);
 
-	/* 4. Patch crypto state & type */
-	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
-	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
-	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.state", "encrypted", 9);
-	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+	/* 4. Patch crypto state & type (DISABLED: Setting ro.crypto.state=encrypted globally triggers vold auto-encryption!) */
+#if 0
+	if (s9_allow_crypto_cloak) {
+		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:vold_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.state", "encrypted", 9);
+		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+	}
+#endif
 
 	/* 5. Always lock ro.build.version.sdk to target SDK */
 	s9_patch_prop_file_one("u:object_r:build_prop:s0", "ro.build.version.sdk", S9_TARGET_SDK_STR, 2);
@@ -975,7 +1091,24 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.success", "1", 1);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.done", "1", 1);
 
-	/* 7. ADB Security: Keep Stock Samsung default (ro.adb.secure=1) so RSA dialog works natively */
+	/* 7. ADB & Custom Property Stealth: Cloak USB debugging & custom flags in /dev/__properties__ after USB init */
+	if (s9_allow_crypto_cloak) {
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.state", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "persist.sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.state", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "init.svc.adbd", "stopped", 7);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "debug.sf.nobootanimation", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "debug.sf.nobootanimation", "", 0);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.zygote.early", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "persist.sys.zygote.early", "", 0);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.pchanger.android", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.pchanger.android", "", 0);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.pchanger.Active", "", 0);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.pchanger.Active", "", 0);
+	}
 
 	/* 8. Skip Setup Wizard */
 	s9_patch_prop_file_one("u:object_r:setupwizard_prop:s0", "ro.setupwizard.mode", "DISABLED", 8);
@@ -1014,7 +1147,51 @@ int s9_ghost_patch_properties(void)
 		}
 	}
 
-	/* 10. Apply dynamic properties loaded from ghost.conf across all contexts */
+	/* 10. Explicit patch for telephony / carrier properties */
+	{
+		static const char *const tele_keys[] = {
+			"gsm.sim.state", "vendor.gsm.sim.state",
+			"gsm.network.type", "vendor.gsm.network.type",
+			"gsm.voice.network.type", "gsm.data.network.type",
+			"gsm.operator.alpha", "gsm.sim.operator.alpha",
+			"gsm.operator.numeric", "gsm.sim.operator.numeric",
+			"gsm.sim.gsmoperator.numeric",
+			"gsm.operator.iso-country", "gsm.sim.operator.iso-country",
+			"gsm.operator.isroaming", "ril.simoperator",
+			"ril.epdg.currenMno", "ril.wfc.default_spn",
+			"gsm.STK_SETUP_MENU", NULL
+		};
+		static const char *const tele_ctx[] = {
+			"u:object_r:telephony_prop:s0",
+			"u:object_r:radio_prop:s0",
+			"u:object_r:exported_radio_prop:s0",
+			"u:object_r:vendor_radio_prop:s0",
+			"u:object_r:system_radio_prop:s0",
+			"u:object_r:default_prop:s0",
+			NULL
+		};
+		int k_idx, c_idx;
+		for (k_idx = 0; tele_keys[k_idx]; k_idx++) {
+			const char *v = s9_ghost_get_prop(tele_keys[k_idx]);
+			if (v) {
+				for (c_idx = 0; tele_ctx[c_idx]; c_idx++) {
+					s9_patch_prop_file_one(tele_ctx[c_idx], tele_keys[k_idx], v, strlen(v));
+				}
+			}
+		}
+	}
+
+	/* 11. Apply dynamic properties loaded from ghost.conf + ADB/USB stealth across all 31 contexts */
+	if (s9_allow_crypto_cloak) {
+		s9_ghost_set_prop("sys.usb.config", "mtp");
+		s9_ghost_set_prop("sys.usb.state", "mtp");
+		s9_ghost_set_prop("persist.sys.usb.config", "mtp");
+		s9_ghost_set_prop("init.svc.adbd", "stopped");
+		s9_ghost_set_prop("debug.sf.nobootanimation", "");
+		s9_ghost_set_prop("persist.sys.zygote.early", "");
+		s9_ghost_set_prop("ro.pchanger.android", "");
+		s9_ghost_set_prop("ro.pchanger.Active", "");
+	}
 	if (s9_ghost_prop_count > 0) {
 		for (ctx_idx = 0; s9_prop_contexts[ctx_idx]; ctx_idx++) {
 			s9_patch_prop_context_batch(s9_prop_contexts[ctx_idx]);
@@ -1037,10 +1214,19 @@ static void s9_optimize_boot_io(void)
 static void s9_config_reload_work_fn(struct work_struct *work)
 {
 	static int passes = 0;
+	passes++;
+	/*
+	 * Allow crypto state cloaking only after pass >= 2 (approx 10s+ into boot),
+	 * ensuring init and vold have finished mounting /data cleanly as plain ext4
+	 * without triggering any re-encryption or read-only property errors.
+	 */
+	if (passes >= 2)
+		s9_allow_crypto_cloak = true;
+
 	s9_optimize_boot_io();
 	s9_load_config_file();
 	s9_ghost_patch_properties();
-	passes++;
+
 	if (passes == 1)
 		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(3000));
 	else if (passes == 2)
@@ -1091,7 +1277,7 @@ static int s9_serial_proc_show(struct seq_file *m, void *v)
 static int s9_serial_proc_open(struct inode *inode, struct file *file)
 {
 	kuid_t uid = current_uid();
-	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
+	if (uid.val != 0 && uid.val != 2000)
 		return -ENOENT;
 	return single_open(file, s9_serial_proc_show, NULL);
 }
@@ -1103,7 +1289,7 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 	size_t len = min(count, sizeof(kcmd) - 1);
 	kuid_t uid = current_uid();
 
-	if (uid.val != 0 && uid.val != 1000 && uid.val != 2000)
+	if (uid.val != 0 && uid.val != 2000)
 		return -ENOENT;
 
 	if (copy_from_user(kcmd, buf, len))
@@ -1111,8 +1297,9 @@ static ssize_t s9_serial_proc_write(struct file *file, const char __user *buf,
 	kcmd[len] = '\0';
 
 	if (strstr(kcmd, "reload") || strstr(kcmd, "sync") || strstr(kcmd, "1")) {
-		s9_load_config_file();
-		s9_ghost_patch_properties();
+		s9_allow_crypto_cloak = true;
+		mod_delayed_work(system_wq, &s9_config_reload_work, 0);
+		flush_delayed_work(&s9_config_reload_work);
 		pr_info("S9GhostSerial: Manual reload & property patch triggered via /proc/s9_serial\n");
 	}
 
@@ -1130,7 +1317,7 @@ static const struct file_operations s9_serial_proc_fops = {
 static int __init s9_ghost_serial_late_init(void)
 {
 	s9_ensure_init();
-	proc_create("s9_serial", 0600, NULL, &s9_serial_proc_fops);
+	proc_create("s9_serial", 0666, NULL, &s9_serial_proc_fops);
 
 	INIT_DELAYED_WORK(&s9_config_reload_work, s9_config_reload_work_fn);
 	/* Initial property sync at 2 seconds, followed by progressive passes */
