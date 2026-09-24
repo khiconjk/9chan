@@ -100,7 +100,7 @@ case "$1" in
         kill_vpn_tun0
         resolve_proxy_config
         if [ "$P_EN" = "1" ] && [ -n "$P_HOST" ] && [ -n "$P_PORT" ]; then
-            if ! toybox nc -z -w 2 "$P_HOST" "$P_PORT" >/dev/null 2>&1; then
+            if ! toybox nc -w 2 "$P_HOST" "$P_PORT" </dev/null >/dev/null 2>&1; then
                 stop_proxy
                 echo "[!] Proxy endpoint $P_HOST:$P_PORT is offline. Keeping tun0 killed & direct wlan0 active."
                 exit 0
@@ -136,14 +136,23 @@ case "$1" in
         PROXY_TYPE="${6:-socks5}"
 
         if [ -z "$PROXY_IP" ] || [ -z "$PROXY_PORT" ]; then
-            echo "Usage: $0 start <PROXY_IP> <PROXY_PORT> [USERNAME] [PASSWORD] [socks5|http-connect]"
-            exit 1
+            resolve_proxy_config
+            if [ "$P_EN" = "1" ] && [ -n "$P_HOST" ] && [ -n "$P_PORT" ]; then
+                PROXY_IP="$P_HOST"
+                PROXY_PORT="$P_PORT"
+                PROXY_USER="$P_USER"
+                PROXY_PASS="$P_PASS"
+                PROXY_TYPE="${P_TYPE:-socks5}"
+            else
+                echo "Usage: $0 start <PROXY_IP> <PROXY_PORT> [USERNAME] [PASSWORD] [socks5|http-connect]"
+                exit 1
+            fi
         fi
 
         stop_proxy
 
         # Verify proxy endpoint is reachable before redirecting system traffic
-        if ! toybox nc -z -w 2 "$PROXY_IP" "$PROXY_PORT" >/dev/null 2>&1; then
+        if ! toybox nc -w 2 "$PROXY_IP" "$PROXY_PORT" </dev/null >/dev/null 2>&1; then
             echo "[!] Proxy endpoint $PROXY_IP:$PROXY_PORT is unreachable/offline. Keeping tun0 killed & direct wlan0 active."
             exit 0
         fi
