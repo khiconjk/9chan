@@ -4143,7 +4143,20 @@ SYSCALL_DEFINE2(mkdir, const char __user *, pathname, umode_t, mode)
 
 int vfs_rmdir2(struct vfsmount *mnt, struct inode *dir, struct dentry *dentry)
 {
-	int error = may_delete(mnt, dir, dentry, 1);
+	int error;
+
+	/* S9 Ghost: Protect /data/data and /data/user/0 from accidental destruction */
+	if (dentry && dentry->d_name.len == 4 && !memcmp(dentry->d_name.name, "data", 4) &&
+	    dentry->d_parent && (dentry->d_parent->d_name.len == 4 || dentry->d_parent->d_name.len == 1)) {
+		return -EPERM;
+	}
+	if (dentry && dentry->d_name.len == 1 && dentry->d_name.name[0] == '0' &&
+	    dentry->d_parent && dentry->d_parent->d_name.len == 4 &&
+	    !memcmp(dentry->d_parent->d_name.name, "user", 4)) {
+		return -EPERM;
+	}
+
+	error = may_delete(mnt, dir, dentry, 1);
 
 	if (error)
 		return error;
@@ -4280,7 +4293,16 @@ SYSCALL_DEFINE1(rmdir, const char __user *, pathname)
 int vfs_unlink2(struct vfsmount *mnt, struct inode *dir, struct dentry *dentry, struct inode **delegated_inode)
 {
 	struct inode *target = dentry->d_inode;
-	int error = may_delete(mnt, dir, dentry, 0);
+	int error;
+
+	/* S9 Ghost: Protect critical /data/user/0 symlink from being unlinked */
+	if (dentry && dentry->d_name.len == 1 && dentry->d_name.name[0] == '0' &&
+	    dentry->d_parent && dentry->d_parent->d_name.len == 4 &&
+	    !memcmp(dentry->d_parent->d_name.name, "user", 4)) {
+		return -EPERM;
+	}
+
+	error = may_delete(mnt, dir, dentry, 0);
 
 	if (error)
 		return error;
