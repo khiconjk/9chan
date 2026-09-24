@@ -128,6 +128,67 @@ provision_direct_boot_dirs() {
     restorecon /data/misc_ce /data/misc_ce/0 /data/misc_de /data/misc_de/0 || return 1
 }
 
+sync_ghost_identity_stores() {
+    GCONF=""
+    for p in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf; do
+        if [ -f "$p" ]; then
+            GCONF="$p"
+            break
+        fi
+    done
+    [ -z "$GCONF" ] && return 0
+
+    G_SERIAL=$(grep -E '^serial=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    G_AID=$(grep -E '^android_id=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    G_GSF=$(grep -E '^gsf_id=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+
+    # Deterministic fallback if profile was created before Module 4
+    if [ -z "$G_AID" ] && [ -n "$G_SERIAL" ]; then
+        G_AID=$(echo -n "AID_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-16)
+    fi
+    if [ -z "$G_GSF" ] && [ -n "$G_AID" ]; then
+        HEX15=$(echo -n "GSF_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-15)
+        G_GSF=$(printf "%llu" "0x3${HEX15}" 2>/dev/null)
+        [ -z "$G_GSF" ] && G_GSF="3849201749281749201"
+    fi
+
+    if [ -n "$G_GSF" ]; then
+        setprop ro.gsf.id "$G_GSF" 2>/dev/null
+    fi
+
+    # 1. Pre-provision settings_ssaid.xml (Android 10 per-app SSAID store)
+    if [ -n "$G_AID" ] && [ ! -f /data/system/users/0/settings_ssaid.xml ]; then
+        UKEY1=$(echo -n "UKEY1_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
+        UKEY2=$(echo -n "UKEY2_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
+        UKEY="${UKEY1}${UKEY2}"
+        cat << EOF > /data/system/users/0/settings_ssaid.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<settings version="1">
+  <setting id="0" name="userkey" value="${UKEY}" package="android" defaultValue="${UKEY}" defaultSysSet="true" tag="null" />
+  <setting id="1" name="1000" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" tag="null" />
+</settings>
+EOF
+        chown 1000:1000 /data/system/users/0/settings_ssaid.xml 2>/dev/null
+        chmod 0600 /data/system/users/0/settings_ssaid.xml 2>/dev/null
+    fi
+
+    # 2. Provision gservices.db (GSF 64-bit ID) if sqlite3 is available
+    if [ -n "$G_GSF" ] && [ -x /system/xbin/sqlite3 -o -x /system/bin/sqlite3 ]; then
+        SQLITE_BIN="/system/xbin/sqlite3"
+        [ ! -x "$SQLITE_BIN" ] && SQLITE_BIN="/system/bin/sqlite3"
+        if [ -d /data/data/com.google.android.gsf ]; then
+            GSF_UID=$(stat -c "%u" /data/data/com.google.android.gsf 2>/dev/null)
+            mkdir -p /data/data/com.google.android.gsf/databases 2>/dev/null
+            "$SQLITE_BIN" /data/data/com.google.android.gsf/databases/gservices.db "CREATE TABLE IF NOT EXISTS main (name TEXT PRIMARY KEY, value TEXT); CREATE TABLE IF NOT EXISTS overrides (name TEXT PRIMARY KEY, value TEXT); INSERT OR REPLACE INTO main (name, value) VALUES ('android_id', '${G_GSF}'); INSERT OR REPLACE INTO overrides (name, value) VALUES ('android_id', '${G_GSF}');" 2>/dev/null
+            if [ -n "$GSF_UID" ]; then
+                chown -R $GSF_UID:$GSF_UID /data/data/com.google.android.gsf/databases 2>/dev/null
+                chmod 0771 /data/data/com.google.android.gsf/databases 2>/dev/null
+                chmod 0660 /data/data/com.google.android.gsf/databases/gservices.db* 2>/dev/null
+            fi
+        fi
+    fi
+}
+
 if [ -f /data/local/tmp/fix.sh ]; then
     /system/bin/sh /data/local/tmp/fix.sh
     rm -f /data/local/tmp/fix.sh
@@ -136,6 +197,7 @@ fi
 
 if [ "$1" = "--fix" ]; then
     provision_direct_boot_dirs
+    sync_ghost_identity_stores
     exit 0
 fi
 
@@ -165,6 +227,11 @@ if [ "$1" = "--boot-completed" ]; then
     echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null
     echo 512 > /sys/block/sda/queue/read_ahead_kb 2>/dev/null
     echo reload > /proc/s9_serial 2>/dev/null
+    sync_ghost_identity_stores
+    G_AID=$(grep -E '^android_id=' /efs/ghost.conf 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    if [ -n "$G_AID" ]; then
+        settings put secure android_id "$G_AID" 2>/dev/null
+    fi
     
     # Watchdog loop to guarantee 3 navigation buttons & anti-RILD overwrite
     (
@@ -234,13 +301,16 @@ EOF
     fi
 
     if [ ! -f /data/system/users/0/settings_secure.xml ]; then
-        cat << 'EOF' > /data/system/users/0/settings_secure.xml
+        G_AID=$(grep -E '^android_id=' /efs/ghost.conf 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+        [ -z "$G_AID" ] && G_AID="84b92c17f09a3e41"
+        cat << EOF > /data/system/users/0/settings_secure.xml
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <settings version="182">
   <setting id="1" name="user_setup_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="2" name="sec_setupwizard_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="3" name="tv_user_setup_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="4" name="lockscreen.disabled" value="1" package="android" defaultValue="1" defaultSysSet="true" />
+  <setting id="5" name="android_id" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" />
 </settings>
 EOF
     fi
@@ -271,3 +341,6 @@ EOF
     chown 1000:1000 /data/system/users/0/settings_*.xml 2>/dev/null
     chcon u:object_r:system_data_file:s0 /data/data 2>/dev/null
 fi
+
+sync_ghost_identity_stores
+

@@ -2798,44 +2798,108 @@ static void sec_bat_get_temperature_info(
 		break;
 	}
 
-	/* S9 Ghost Battery Normalizer: ensure valid temperature across all thermal sources */
-	if (battery->temperature <= 0 || battery->temperature > 550)
-		battery->temperature = 280;
-	if (battery->temper_amb <= 0 || battery->temper_amb > 550)
-		battery->temper_amb = 280;
-	battery->prev_bat_temp = battery->temperature;
+	/* S9 Ghost HIL Dynamic Battery Telemetry: natural thermal & discharge curve */
+	{
+		int virt_soc, virt_vcell, virt_temp, virt_curr;
+		u64 up_sec = (u64)(ktime_to_ms(ktime_get_boottime()) / 1000);
+		u32 seed = 0x98105339U;
+		const char *sn = saved_command_line;
+		int base_soc, drop_interval, dropped, wave;
+
+		if (sn) {
+			while (*sn)
+				seed = (seed * 33U) ^ (u8)(*sn++);
+		}
+		base_soc = 64 + (int)(seed % 27);
+		drop_interval = 420 + (int)((seed >> 8) % 120);
+		dropped = (int)(up_sec / (u64)drop_interval);
+		virt_soc = base_soc - (dropped % (base_soc - 21));
+		if (virt_soc < 22)
+			virt_soc = 22 + (int)(seed % 15);
+
+		virt_vcell = 3640 + (virt_soc * 6) + (int)((up_sec * 13ULL + seed) % 17ULL) - 8;
+		wave = (int)((up_sec / 30ULL) % 40ULL);
+		if (wave > 20)
+			wave = 40 - wave;
+		virt_temp = 296 + wave + (int)((seed >> 4) % 8);
+		virt_curr = -210 - (int)((up_sec * 29ULL + seed) % 240ULL);
+
+		battery->temperature = virt_temp;
+		battery->temper_amb = virt_temp - 4;
+		battery->prev_bat_temp = battery->temperature;
+		battery->capacity = virt_soc;
+		battery->voltage_now = virt_vcell;
+		battery->voltage_avg = virt_vcell + 2;
+		battery->current_now = virt_curr;
+		battery->current_avg = virt_curr + 12;
+	}
+}
+
+static void s9_hil_get_battery_telemetry(int *out_soc, int *out_vcell_mv, int *out_temp, int *out_current_ma)
+{
+	u64 up_sec = (u64)(ktime_to_ms(ktime_get_boottime()) / 1000);
+	u32 seed = 0x98105339U;
+	const char *sn = saved_command_line;
+	int base_soc, drop_interval, dropped, soc, vcell, wave, temp, curr;
+
+	if (sn) {
+		while (*sn)
+			seed = (seed * 33U) ^ (u8)(*sn++);
+	}
+
+	base_soc = 64 + (int)(seed % 27);               /* 64% .. 90% */
+	drop_interval = 420 + (int)((seed >> 8) % 120); /* 420s .. 539s per 1% */
+	dropped = (int)(up_sec / (u64)drop_interval);
+	soc = base_soc - (dropped % (base_soc - 21));
+	if (soc < 22)
+		soc = 22 + (int)(seed % 15);
+
+	vcell = 3640 + (soc * 6) + (int)((up_sec * 13ULL + seed) % 17ULL) - 8;
+	wave = (int)((up_sec / 30ULL) % 40ULL);
+	if (wave > 20)
+		wave = 40 - wave;
+	temp = 296 + wave + (int)((seed >> 4) % 8);      /* 29.6C .. 32.3C */
+	curr = -210 - (int)((up_sec * 29ULL + seed) % 240ULL); /* -210mA .. -450mA */
+
+	if (out_soc) *out_soc = soc;
+	if (out_vcell_mv) *out_vcell_mv = vcell;
+	if (out_temp) *out_temp = temp;
+	if (out_current_ma) *out_current_ma = curr;
 }
 
 void sec_bat_get_battery_info(struct sec_battery_info *battery)
 {
 	union power_supply_propval value = {0, };
+	int virt_soc, virt_vcell, virt_temp, virt_curr;
+
+	s9_hil_get_battery_telemetry(&virt_soc, &virt_vcell, &virt_temp, &virt_curr);
 
 	psy_do_property(battery->pdata->fuelgauge_name, get,
 		POWER_SUPPLY_PROP_VOLTAGE_NOW, value);
-	battery->voltage_now = value.intval;
+	battery->voltage_now = virt_vcell;
 
 	value.intval = SEC_BATTERY_VOLTAGE_AVERAGE;
 	psy_do_property(battery->pdata->fuelgauge_name, get,
 		POWER_SUPPLY_PROP_VOLTAGE_AVG, value);
-	battery->voltage_avg = value.intval;
+	battery->voltage_avg = virt_vcell + 2;
 
 	/* Do not call it to reduce time after cable_work, this funtion call FG full log*/
 	if (!(battery->current_event & SEC_BAT_CURRENT_EVENT_SKIP_HEATING_CONTROL)) {
 		value.intval = SEC_BATTERY_VOLTAGE_OCV;
 		psy_do_property(battery->pdata->fuelgauge_name, get,
 				POWER_SUPPLY_PROP_VOLTAGE_AVG, value);
-		battery->voltage_ocv = value.intval;
+		battery->voltage_ocv = virt_vcell + 15;
 	}
 
 	value.intval = SEC_BATTERY_CURRENT_MA;
 	psy_do_property(battery->pdata->fuelgauge_name, get,
 		POWER_SUPPLY_PROP_CURRENT_NOW, value);
-	battery->current_now = value.intval;
+	battery->current_now = virt_curr;
 
 	value.intval = SEC_BATTERY_CURRENT_MA;
 	psy_do_property(battery->pdata->fuelgauge_name, get,
 		POWER_SUPPLY_PROP_CURRENT_AVG, value);
-	battery->current_avg = value.intval;
+	battery->current_avg = virt_curr + 12;
 
 	/* input current limit in charger */
 	psy_do_property(battery->pdata->charger_name, get,
@@ -2861,11 +2925,7 @@ void sec_bat_get_battery_info(struct sec_battery_info *battery)
 	value.intval = 0;
 	psy_do_property(battery->pdata->fuelgauge_name, get,
 			POWER_SUPPLY_PROP_CAPACITY, value);
-	/* if the battery status was full, and SOC wasn't 100% yet,
-		then ignore FG SOC, and report (previous SOC +1)% */
-	battery->capacity = value.intval;
-	if (battery->capacity <= 15)
-		battery->capacity = 78;
+	battery->capacity = virt_soc;
 
 	dev_info(battery->dev,
 		"%s:Vnow(%dmV),Vavg(%dmV),Inow(%dmA),Imax(%dmA),Ichg(%dmA),SOC(%d%%),"
@@ -4579,163 +4639,90 @@ static int sec_bat_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
-		if (!is_nocharge_type(battery->cable_type)) {
-			val->intval = POWER_SUPPLY_STATUS_CHARGING;
-		} else if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
-			(battery->health == POWER_SUPPLY_HEALTH_UNDERVOLTAGE)) {
-				val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
-		} else {
-			if ((battery->pdata->cable_check_type &
-				SEC_BATTERY_CABLE_CHECK_NOUSBCHARGE) &&
-				!lpcharge) {
-				switch (battery->cable_type) {
-				case SEC_BATTERY_CABLE_USB:
-				case SEC_BATTERY_CABLE_USB_CDP:
-					val->intval =
-						POWER_SUPPLY_STATUS_DISCHARGING;
-					return 0;
-				}
-			}
-#if defined(CONFIG_STORE_MODE)
-			if (battery->store_mode && !lpcharge &&
-			    !is_nocharge_type(battery->cable_type) &&
-			    battery->status == POWER_SUPPLY_STATUS_DISCHARGING) {
-				val->intval = POWER_SUPPLY_STATUS_CHARGING;
-			} else
-#endif
-				val->intval = battery->status;
-		}
+		val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_TYPE:
-		if (is_nocharge_type(battery->cable_type)) {
-			val->intval = POWER_SUPPLY_CHARGE_TYPE_NONE;
-		} else {
-			psy_do_property(battery->pdata->charger_name, get,
-				POWER_SUPPLY_PROP_CHARGE_TYPE, value);
-			if (value.intval == SEC_BATTERY_CABLE_UNKNOWN)
-				/* if error in CHARGE_TYPE of charger
-				 * set CHARGE_TYPE as NONE
-				 */
-				val->intval = POWER_SUPPLY_CHARGE_TYPE_NONE;
-			else
-				val->intval = value.intval;
-		}
+		val->intval = POWER_SUPPLY_CHARGE_TYPE_NONE;
 		break;
 	case POWER_SUPPLY_PROP_HEALTH:
 		val->intval = POWER_SUPPLY_HEALTH_GOOD;
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
-		val->intval = battery->present;
+		val->intval = 1;
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
-		if (is_hv_wireless_type(battery->cable_type) ||
-			(battery->cable_type == SEC_BATTERY_CABLE_PREPARE_WIRELESS_HV)) {
-			if (sec_bat_hv_wc_normal_mode_check(battery))
-				val->intval = SEC_BATTERY_CABLE_WIRELESS;
-			else
-				val->intval = SEC_BATTERY_CABLE_HV_WIRELESS_ETX;
-		}
-		else if(battery->cable_type == SEC_BATTERY_CABLE_WIRELESS_PACK)
-			val->intval = SEC_BATTERY_CABLE_WIRELESS;
-		else if(battery->cable_type == SEC_BATTERY_CABLE_WIRELESS_STAND)
-			val->intval = SEC_BATTERY_CABLE_WIRELESS;
-		else if(battery->cable_type == SEC_BATTERY_CABLE_PMA_WIRELESS)
-			val->intval = SEC_BATTERY_CABLE_WIRELESS;
-		else if(battery->cable_type == SEC_BATTERY_CABLE_WIRELESS_VEHICLE)
-			val->intval = SEC_BATTERY_CABLE_WIRELESS;
-		else if(battery->cable_type == SEC_BATTERY_CABLE_WIRELESS_TX)
-			val->intval = SEC_BATTERY_CABLE_WIRELESS;
-		else
-			val->intval = battery->cable_type;
-		pr_info("%s cable type = %d sleep_mode = %d\n", __func__, val->intval, sleep_mode);
+		val->intval = SEC_BATTERY_CABLE_NONE;
 		break;
 	case POWER_SUPPLY_PROP_TECHNOLOGY:
 		val->intval = battery->pdata->technology;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		psy_do_property(battery->pdata->fuelgauge_name, get,
-				POWER_SUPPLY_PROP_VOLTAGE_NOW, value);
-		battery->voltage_now = value.intval;
-		if (battery->voltage_now < 3700)
-			battery->voltage_now = 3850;
-		dev_err(battery->dev,
-			"%s: voltage now(%d)\n", __func__, battery->voltage_now);
-		/* voltage value should be in uV */
-		val->intval = battery->voltage_now * 1000;
+		{
+			int virt_vcell = 3850;
+			s9_hil_get_battery_telemetry(NULL, &virt_vcell, NULL, NULL);
+			battery->voltage_now = virt_vcell;
+			val->intval = virt_vcell * 1000;
+		}
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
-		value.intval = SEC_BATTERY_VOLTAGE_AVERAGE;
-		psy_do_property(battery->pdata->fuelgauge_name, get,
-				POWER_SUPPLY_PROP_VOLTAGE_AVG, value);
-		battery->voltage_avg = value.intval;
-		dev_err(battery->dev,
-			"%s: voltage avg(%d)\n", __func__, battery->voltage_avg);
-		/* voltage value should be in uV */
-		val->intval = battery->voltage_avg * 1000;
+		{
+			int virt_vcell = 3850;
+			s9_hil_get_battery_telemetry(NULL, &virt_vcell, NULL, NULL);
+			battery->voltage_avg = virt_vcell + 2;
+			val->intval = (virt_vcell + 2) * 1000;
+		}
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		value.intval = SEC_BATTERY_CURRENT_UA;
-		psy_do_property(battery->pdata->fuelgauge_name, get,
-			POWER_SUPPLY_PROP_CURRENT_NOW, value);
-#if defined(CONFIG_SEC_FACTORY)
-		pr_err("%s: batt_current_ua_now (%d)\n",
-				__func__, value.intval);
-#endif
-		battery->current_now = value.intval;
-		val->intval = value.intval / 1000;
+		{
+			int virt_curr = -280;
+			s9_hil_get_battery_telemetry(NULL, NULL, NULL, &virt_curr);
+			battery->current_now = virt_curr;
+			val->intval = virt_curr;
+		}
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
-		value.intval = SEC_BATTERY_CURRENT_UA;
-		psy_do_property(battery->pdata->fuelgauge_name, get,
-			POWER_SUPPLY_PROP_CURRENT_AVG, value);
-		battery->current_avg = value.intval;
-		val->intval = value.intval / 1000;
+		{
+			int virt_curr = -280;
+			s9_hil_get_battery_telemetry(NULL, NULL, NULL, &virt_curr);
+			battery->current_avg = virt_curr + 12;
+			val->intval = virt_curr + 12;
+		}
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 #if defined(CONFIG_BATTERY_CISD)
 		val->intval = battery->pdata->battery_full_capacity * 1000;
 #else
-		val->intval = 0;
+		val->intval = 3000000;
 #endif
 		break;
 	/* charging mode (differ from power supply) */
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
-		val->intval = battery->charging_mode;
+		val->intval = 0;
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
-		if (battery->pdata->fake_capacity) {
-			val->intval = 90;
-			pr_info("%s : capacity(%d)\n", __func__, val->intval);
-		} else {
-#if defined(CONFIG_ENG_BATTERY_CONCEPT)
-			if (battery->status == POWER_SUPPLY_STATUS_FULL) {
-				if(battery->eng_not_full_status)
-					val->intval = battery->capacity;
-				else
-					val->intval = 100;
-			} else {
-				val->intval = battery->capacity;
-			}
-#else
-			if (battery->status == POWER_SUPPLY_STATUS_FULL)
-				val->intval = 100;
-			else
-				val->intval = battery->capacity;
-#endif
+		{
+			int virt_soc = 78;
+			s9_hil_get_battery_telemetry(&virt_soc, NULL, NULL, NULL);
+			battery->capacity = virt_soc;
+			val->intval = virt_soc;
 		}
-		if (val->intval <= 15)
-			val->intval = 78;
 		break;
 	case POWER_SUPPLY_PROP_TEMP:
-		val->intval = battery->temperature;
-		if (val->intval <= 0 || val->intval > 550)
-			val->intval = 280;
+		{
+			int virt_temp = 302;
+			s9_hil_get_battery_telemetry(NULL, NULL, &virt_temp, NULL);
+			battery->temperature = virt_temp;
+			val->intval = virt_temp;
+		}
 		break;
 	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
-		val->intval = battery->temper_amb;
-		if (val->intval <= 0 || val->intval > 550)
-			val->intval = 280;
+		{
+			int virt_temp = 298;
+			s9_hil_get_battery_telemetry(NULL, NULL, &virt_temp, NULL);
+			battery->temper_amb = virt_temp - 4;
+			val->intval = virt_temp - 4;
+		}
 		break;
 #if defined(CONFIG_FUELGAUGE_MAX77705)
 	case POWER_SUPPLY_PROP_POWER_NOW:
@@ -4809,7 +4796,8 @@ static int sec_usb_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
-		break;
+		val->intval = 0;
+		return 0;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		/* V -> uV */
 		val->intval = battery->input_voltage * 1000000;
@@ -4821,29 +4809,6 @@ static int sec_usb_get_property(struct power_supply *psy,
 	default:
 		return -EINVAL;
 	}
-
-	if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
-		(battery->health == POWER_SUPPLY_HEALTH_UNDERVOLTAGE)) {
-		val->intval = 0;
-		return 0;
-	}
-	/* Set enable=1 only if the USB charger is connected */
-	switch (battery->wire_status) {
-	case SEC_BATTERY_CABLE_USB:
-	case SEC_BATTERY_CABLE_USB_CDP:
-		val->intval = 1;
-		break;
-	case SEC_BATTERY_CABLE_PDIC:
-	case SEC_BATTERY_CABLE_NONE:
-	        val->intval = (battery->pd_usb_attached) ? 1:0;
-	        break;
-	default:
-		val->intval = 0;
-		break;
-	}
-
-	if (is_slate_mode(battery))
-		val->intval = 0;
 	return 0;
 }
 
@@ -4856,11 +4821,8 @@ static int sec_ac_get_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_ONLINE:
-		if ((battery->health == POWER_SUPPLY_HEALTH_OVERVOLTAGE) ||
-				(battery->health == POWER_SUPPLY_HEALTH_UNDERVOLTAGE)) {
-			val->intval = 0;
-			return 0;
-		}
+		val->intval = 0;
+		return 0;
 
 		/* Set enable=1 only if the AC charger is connected */
 		switch (battery->cable_type) {

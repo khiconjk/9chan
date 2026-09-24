@@ -49,7 +49,7 @@ Rack-mounted test devices remain connected to USB host power continuously. Stand
 
 static void s9_hil_get_battery_telemetry(int *out_soc, int *out_vcell_mv, int *out_temp, int *out_current_ma)
 {
-	u64 up_sec = ktime_get_boottime_seconds();
+	u64 up_sec = (u64)(ktime_to_ms(ktime_get_boottime()) / 1000);
 	u32 seed = 0x98105339U;
 	const char *sn = saved_command_line;
 	int base_soc, drop_interval, dropped, soc, vcell, wave, temp, curr;

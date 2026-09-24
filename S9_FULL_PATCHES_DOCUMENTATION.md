@@ -1296,9 +1296,62 @@ Can thiệp trực tiếp vào tầng giao tiếp thanh ghi I2C của trình đi
 ---
 
 ### 10.4. Kết quả kiểm chứng thực nghiệm
-* **Phiên bản Kernel đang chạy:** `Linux localhost 4.9.191-perf #40 SMP PREEMPT Thu Sep 24 13:26:19 +07 2026 aarch64`.
-* **Trạng thái thanh trạng thái One UI:** Hiển thị cố định biểu tượng **Loa gạch chéo (Mute)** và **Không làm phiền (Do Not Disturb - Total Silence)**.
+* **Phiên bản Kernel đang chạy:** `Linux localhost 4.9.191-perf #41 SMP PREEMPT Thu Sep 24 16:31:09 +07 2026 aarch64`.
+* **Trạng thái thanh trạng thái One UI:** Hiển thị cố định biểu tượng **Loa gạch chéo (Mute)**, **Không làm phiền (Do Not Disturb - Total Silence)** và **Biểu tượng Pin xả tự nhiên (không có tia sét sạc)** dù đang cắm cáp USB điều khiển từ PC.
 * **Kiểm tra vật lý & Logcat:**
   - Phát âm thanh/video tần số cao hoặc chuông báo thức: Cả loa ngoài dưới đáy và loa thoại phía trên đều im lặng tuyệt đối 100% (điện áp đầu ra chip khuếch đại MAX98512 bằng `0V`).
   - `logcat -b crash` hoàn toàn trống (`0 errors`), các ứng dụng phát video (TikTok, YouTube, Shopee Live) chạy mượt mà không bị dừng hay báo lỗi thiết bị âm thanh.
+
+---
+
+## PHẦN 11: 5 MODULE MÔ PHỎNG PHẦN CỨNG NÂNG CAO (HIL TELEMETRY & IDENTITY HARMONIZATION - KERNEL #41 & PCHANGER v4.4)
+
+Thực thi trọn vẹn đặc tả kỹ thuật [`CODEX_IMPLEMENTATION_SPEC_5_MODULES.md`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/CODEX_IMPLEMENTATION_SPEC_5_MODULES.md) đồng bộ giữa **Kernel Build #41** và **Pchanger v4.4 (`RecoveryHelper.java` & `fastboot_seed.sh`)**:
+
+### 11.1. Module 1: Mô phỏng Đường cong Tiêu hao Pin Động ở cấp Kernel (`Dynamic Battery Emulation`)
+* **Tệp nguồn:** [`drivers/battery_v2/sec_battery.c`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/drivers/battery_v2/sec_battery.c) & [`drivers/battery_v2/max77705_fuelgauge.c`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/drivers/battery_v2/max77705_fuelgauge.c).
+* **Cơ chế hoạt động:**
+  - Phần cứng PMIC (`MAX77705`) vẫn duy trì dòng sạc vật lý bình thường qua cáp USB để nuôi bo mạch chạy 24/7.
+  - Tuy nhiên, tại tầng báo cáo `power_supply` (`sec_bat_get_property`, `sec_bat_get_battery_info`, `sec_bat_get_temperature_info`, `max77705_fg_get_property`) và `sec_ac_get_property` / `sec_usb_get_property`:
+    - Luôn báo cáo trạng thái `POWER_SUPPLY_STATUS_DISCHARGING` (`status: 3`), `AC powered: false`, `USB powered: false`, `Wireless powered: false`.
+    - Hàm `s9_hil_get_battery_telemetry()` tính toán đường cong xả pin tất định dựa trên `saved_command_line` seed và thời gian hoạt động `(u64)(ktime_to_ms(ktime_get_boottime()) / 1000)`:
+      - Dung lượng khởi điểm (`base_soc`) phân bổ từ `64% .. 90%`, giảm `1%` sau mỗi `420s .. 539s` (7 - 9 phút), tự động giữ ngưỡng an toàn `>= 22%`.
+      - Điện áp cell pin (`VOLTAGE_NOW`) biến thiên theo công thức `3640 + (soc * 6) ± 8 mV` (`~4120 mV` ở `81%`).
+      - Dòng xả tức thời (`CURRENT_NOW`) biến thiên tự nhiên từ `-210 mA` đến `-450 mA`.
+      - Nhiệt độ thermistor (`TEMP`) dao động hình sin tự nhiên quanh `29.6°C .. 32.3°C` (`296 .. 323`).
+
+### 11.2. Module 2: Giả lập Vi rung Cảm biến Quán tính ở cấp Kernel (`Ghost IMU Jitter`)
+* **Tệp nguồn:** [`drivers/input/evdev.c`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/drivers/input/evdev.c) & [`drivers/sensorhub/brcm/ssp_iio.c`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/drivers/sensorhub/brcm/ssp_iio.c).
+* **Cơ chế hoạt động:**
+  - Trong `drivers/input/evdev.c`: Biến toàn cục `u64 s9_hil_last_touch_ns` ghi nhận chính xác mốc thời gian `ktime_get_ns()` mỗi khi có sự kiện chạm màn hình (`EV_KEY` `BTN_TOUCH` hoặc `EV_ABS`).
+  - Trong `drivers/sensorhub/brcm/ssp_iio.c`: Hàm `s9_hil_synthesize_imu()` được gắn trực tiếp vào đường ống đẩy dữ liệu IIO (`report_acc_data`, `report_gyro_data`, `report_interrupt_gyro_data`, `report_uncalib_gyro_data`):
+    - **Dao động vi mô sinh lý (Baseline Physiological Tremor):** Cộng nhiễu vi mô liên tục (`±1..3 LSB`) lên cả 3 trục `X, Y, Z` của Accelerometer và Gyroscope để mô phỏng độ rung tự nhiên của bàn tay người cầm máy.
+    - **Xung lực cơ học đồng bộ thao tác chạm (Touch-Coupled Impulse):** Trong cửa sổ `180 ms` ngay sau khi có thao tác chạm màn hình (`dt_ns < 180000000ULL`), tự động bơm xung phản lực giảm dần theo hàm mũ vào trục `Z` của cảm biến gia tốc và trục `X/Y` của con quay hồi chuyển.
+
+### 11.3. Module 3: Ghép nối Tự động IP Proxy, Nhà mạng SIM, Tọa độ GPS và BSSID Wi-Fi (`Automated Endpoint-Geo-Carrier-WiFi Alignment`)
+* **Tệp nguồn:** [`RecoveryHelper.java`](file:///D:/ROM/pchanger/RecoveryHelper.java) (`resolveEndpointGeoAndCarrier()`).
+* **Cơ chế hoạt động:**
+  - Khi triển khai Profile mới, Pchanger truy vấn thông tin địa lý & ISP của IP đầu ra (`http://ip-api.com/json/?fields=status,countryCode,regionName,city,lat,lon,isp,org,as`).
+  - Tự động ánh xạ ISP sang đúng nhà mạng di động tương ứng:
+    - `Viettel` -> `Viettel` (`45204`), SSID `Viettel_5G_Home`
+    - `VNPT` / `VinaPhone` -> `Vinaphone` (`45202`), SSID `VNPT_FiberVNN_5G`
+    - `MobiFone` / `FPT` / khác -> `Mobifone` (`45201`), SSID `MobiFone_Home_5G`
+  - Tự động đồng bộ tọa độ `gps.lat`, `gps.lon` (cộng vi sai Gaussian `±0.0045°` tương đương bán kính ~450m quanh trạm), `wifi.ssid`, và `wifi.bssid` (sử dụng OUI chuẩn của bộ định tuyến光 GPON tại Việt Nam: `c8:3a:35`, `f4:f2:6d`, `e8:de:27`) vào `/efs/ghost.conf`.
+
+### 11.4. Module 4: Đồng bộ hóa Toàn diện Android ID, Per-App SSAID (Android 10) & 64-bit GSF ID (`Identity Store Synchronization`)
+* **Tệp nguồn:** [`RecoveryHelper.java`](file:///D:/ROM/pchanger/RecoveryHelper.java) & [`fastboot_seed.sh`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/fastboot_seed.sh) (`sync_ghost_identity_stores()`).
+* **Cơ chế hoạt động:**
+  - Sinh mã `android_id` (16 ký tự hex chuẩn) và `gsf_id` (số nguyên 64-bit dương dạng thập phân 19 chữ số bắt đầu bằng `3...`) tất định từ định danh Profile.
+  - Ghi đồng bộ vào cả 3 kho lưu trữ định danh cốt lõi của Android 10:
+    1. `/data/system/users/0/settings_secure.xml` (`android_id`).
+    2. `/data/system/users/0/settings_ssaid.xml` (`userkey` 64-hex + SSAID gốc cho `package="android"`), buộc `SettingsProvider` của Android 10 dẫn xuất lại toàn bộ Per-App Android ID mới cho từng ứng dụng cài đặt.
+    3. `/data/data/com.google.android.gsf/databases/gservices.db` (bảng `main` và `overrides`, khóa `android_id = <gsf_id>`) cùng thuộc tính `ro.gsf.id`.
+
+### 11.5. Module 5: Ràng buộc Khớp nối Phần cứng Đồng nhất (`Hardware Match Constraint`)
+* **Tệp nguồn:** [`kernel/s9_ghost_serial.c`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/kernel/s9_ghost_serial.c) & [`RecoveryHelper.java`](file:///D:/ROM/pchanger/RecoveryHelper.java).
+* **Cơ chế hoạt động:**
+  - **Ràng buộc TAC & Thuật toán Luhn cho IMEI (`generateValidImei`):** Mọi số IMEI 15 chữ số đều bắt buộc mang đúng mã 8 chữ số TAC chính hãng của đúng dòng máy (`SM-G960F` -> `35469509`, `SM-G960N` -> `35642109`, `SM-G965F` -> `35470509`, `SM-G965N` -> `35642209`, `SM-N960F` -> `35901709`, `SM-N960N` -> `35901809`) và chữ số thứ 15 thỏa mãn tuyệt đối kiểm tra modulo-10 **Luhn Checksum**.
+  - **Ràng buộc IEEE Samsung OUI & Cặp địa chỉ MAC liền kề (`generateSamsungMacPair`):** Địa chỉ `wifi.mac` luôn sử dụng 3 byte đầu thuộc dải OUI thật của Samsung Electronics (`98:0c:82`, `d0:c1:b1`, `70:28:8b`, `e4:58:e7`, `24:f5:aa`, `50:01:d9`, `a8:7c:01`), và địa chỉ Bluetooth `bt.mac` luôn bằng chính xác `wifi.mac + 1` (ví dụ `98:0c:82:4b:19:c2` và `98:0c:82:4b:19:c3`), khớp với thiết kế chip combo Broadcom BCM4375.
+  - **Đồng bộ hóa mật độ điểm ảnh & Baseband theo Model (`s9_ghost_harmonize_properties`):** Tự động khóa `ro.sf.lcd_density` (`570` cho S9, `529` cho S9+, `516` cho Note 9) và hậu tố Baseband (`XXUHFVB4` cho bản Quốc tế `F`, `KOU5FVA1` cho bản Hàn Quốc `N`).
+
 

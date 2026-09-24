@@ -274,10 +274,20 @@ static void s9_ghost_harmonize_properties(void)
 				s9_ghost_set_prop("ril.official_cscver", csc_buf);
 				s9_ghost_set_prop("ro.omc.build.version", csc_buf);
 
-				snprintf(bb_buf, sizeof(bb_buf), "%sKOU5FVA1", raw_model);
+				if (strstr(raw_model, "F"))
+					snprintf(bb_buf, sizeof(bb_buf), "%sXXUHFVB4", raw_model);
+				else
+					snprintf(bb_buf, sizeof(bb_buf), "%sKOU5FVA1", raw_model);
 				s9_ghost_set_prop("gsm.version.baseband", bb_buf);
 				s9_ghost_set_prop("ril.sw_ver", bb_buf);
 			}
+			/* Hardware Match Constraint: Model-specific LCD density */
+			if (strstr(model, "G965"))
+				s9_ghost_set_prop("ro.sf.lcd_density", "529");
+			else if (strstr(model, "N960"))
+				s9_ghost_set_prop("ro.sf.lcd_density", "516");
+			else
+				s9_ghost_set_prop("ro.sf.lcd_density", "570");
 		}
 	}
 

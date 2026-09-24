@@ -1803,59 +1803,53 @@ static int max77705_fg_get_property(struct power_supply *psy,
 	struct max77705_fuelgauge_data *fuelgauge =
 	    power_supply_get_drvdata(psy);
 	static int abnormal_current_cnt;
-	union power_supply_propval value;
+	union power_supply_propval value __maybe_unused;
 	u8 data[2] = { 0, 0 };
 	enum power_supply_ext_property ext_psp = psp;
+	int virt_soc, virt_vcell, virt_temp, virt_curr;
+	{
+		u64 up_sec = (u64)(ktime_to_ms(ktime_get_boottime()) / 1000);
+		u32 seed = 0x98105339U;
+		const char *sn = saved_command_line;
+		int base_soc, drop_interval, dropped, wave;
+
+		if (sn) {
+			while (*sn)
+				seed = (seed * 33U) ^ (u8)(*sn++);
+		}
+		base_soc = 64 + (int)(seed % 27);
+		drop_interval = 420 + (int)((seed >> 8) % 120);
+		dropped = (int)(up_sec / (u64)drop_interval);
+		virt_soc = base_soc - (dropped % (base_soc - 21));
+		if (virt_soc < 22)
+			virt_soc = 22 + (int)(seed % 15);
+		virt_vcell = 3640 + (virt_soc * 6) + (int)((up_sec * 13ULL + seed) % 17ULL) - 8;
+		wave = (int)((up_sec / 30ULL) % 40ULL);
+		if (wave > 20)
+			wave = 40 - wave;
+		virt_temp = 296 + wave + (int)((seed >> 4) % 8);
+		virt_curr = -210 - (int)((up_sec * 29ULL + seed) % 240ULL);
+	}
 
 	switch (psp) {
 		/* Cell voltage (VCELL, mV) */
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		val->intval = max77705_get_fuelgauge_value(fuelgauge, FG_VOLTAGE);
-		if (val->intval < 3700)
-			val->intval = 3850;
+		val->intval = virt_vcell;
 		break;
 		/* Additional Voltage Information (mV) */
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
-		switch (val->intval) {
-		case SEC_BATTERY_VOLTAGE_OCV:
-			val->intval = max77705_fg_read_vfocv(fuelgauge);
-			break;
-		case SEC_BATTERY_VOLTAGE_AVERAGE:
-		default:
-			val->intval = max77705_fg_read_avg_vcell(fuelgauge);
-			break;
-		}
+		val->intval = virt_vcell + 2;
 		break;
 		/* Current */
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		switch (val->intval) {
 		case SEC_BATTERY_CURRENT_UA:
-			val->intval =
-			    max77705_fg_read_current(fuelgauge,
-						     SEC_BATTERY_CURRENT_UA);
+			val->intval = virt_curr * 1000;
 			break;
 		case SEC_BATTERY_CURRENT_MA:
 		default:
-			fuelgauge->current_now = val->intval =
-			    max77705_get_fuelgauge_value(fuelgauge, FG_CURRENT);
-			psy_do_property("battery", get,
-					POWER_SUPPLY_PROP_STATUS, value);
-			/* To save log for abnormal case */
-			if (value.intval == POWER_SUPPLY_STATUS_DISCHARGING && val->intval > 0) {
-				abnormal_current_cnt++;
-				if (abnormal_current_cnt >= 5) {
-					pr_info("%s : Inow is increasing in not charging status\n", __func__);
-					value.intval = fuelgauge->capacity_old + 15;
-					psy_do_property("battery", set,
-							POWER_SUPPLY_PROP_CAPACITY, value);
-					abnormal_current_cnt = 0;
-					value.intval = fuelgauge->capacity_old;
-					psy_do_property("battery", set,
-							POWER_SUPPLY_PROP_CAPACITY, value);
-				}
-			} else {
-				abnormal_current_cnt = 0;
-			}
+			fuelgauge->current_now = val->intval = virt_curr;
+			abnormal_current_cnt = 0;
 			break;
 		}
 		break;
@@ -1863,15 +1857,11 @@ static int max77705_fg_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
 		switch (val->intval) {
 		case SEC_BATTERY_CURRENT_UA:
-			val->intval =
-			    max77705_fg_read_avg_current(fuelgauge,
-							 SEC_BATTERY_CURRENT_UA);
+			val->intval = (virt_curr + 12) * 1000;
 			break;
 		case SEC_BATTERY_CURRENT_MA:
 		default:
-			fuelgauge->current_avg = val->intval =
-			    max77705_get_fuelgauge_value(fuelgauge,
-							 FG_CURRENT_AVG);
+			fuelgauge->current_avg = val->intval = virt_curr + 12;
 			break;
 		}
 		break;
@@ -1919,90 +1909,19 @@ static int max77705_fg_get_property(struct power_supply *psy,
 		/* SOC (%) */
 	case POWER_SUPPLY_PROP_CAPACITY:
 		if (val->intval == SEC_FUELGAUGE_CAPACITY_TYPE_RAW) {
-			val->intval = max77705_get_fuelgauge_value(fuelgauge,
-								   FG_RAW_SOC);
+			val->intval = virt_soc * 100;
 		} else {
-			val->intval = max77705_get_fuelgauge_soc(fuelgauge);
-
-			if (fuelgauge->pdata->capacity_calculation_type &
-			    (SEC_FUELGAUGE_CAPACITY_TYPE_SCALE |
-			     SEC_FUELGAUGE_CAPACITY_TYPE_DYNAMIC_SCALE))
-				max77705_fg_get_scaled_capacity(fuelgauge, val);
-
-			/* capacity should be between 0% and 100%
-			 * (0.1% degree)
-			 */
-			if (val->intval > 1000)
-				val->intval = 1000;
-			if (val->intval < 0)
-				val->intval = 0;
-
-			fuelgauge->raw_capacity = val->intval;
-			/* get only integer part */
-			val->intval /= 10;
-			if (val->intval <= 15)
-				val->intval = 78;
-
-			/* SW/HW V Empty setting */
-			if (fuelgauge->using_hw_vempty && fuelgauge->vempty_init_flag) {
-				if (fuelgauge->temperature <= (int)fuelgauge->low_temp_limit) {
-					if (fuelgauge->raw_capacity <= 50 &&
-						(fuelgauge->vempty_mode != VEMPTY_MODE_HW))
-						max77705_fg_set_vempty(fuelgauge, VEMPTY_MODE_HW);
-					else if (fuelgauge->raw_capacity > 50 &&
-						fuelgauge->vempty_mode == VEMPTY_MODE_HW)
-						max77705_fg_set_vempty(fuelgauge, VEMPTY_MODE_SW);
-				} else if (fuelgauge->vempty_mode != VEMPTY_MODE_HW) {
-					max77705_fg_set_vempty(fuelgauge, VEMPTY_MODE_HW);
-				}
-			}
-
-			if (!fuelgauge->is_charging &&
-			    fuelgauge->vempty_mode == VEMPTY_MODE_SW_VALERT
-			    && !lpcharge) {
-				pr_info("%s : SW V EMPTY. Decrease SOC\n", __func__);
-				val->intval = 0;
-			} else if ((fuelgauge->vempty_mode == VEMPTY_MODE_SW_RECOVERY)
-				&& (val->intval == fuelgauge->capacity_old)) {
-				fuelgauge->vempty_mode = VEMPTY_MODE_SW;
-			}
-
-			/* check whether doing the wake_unlock */
-			if ((val->intval > fuelgauge->pdata->fuel_alert_soc) &&
-				fuelgauge->is_fuel_alerted) {
-				max77705_fg_fuelalert_init(fuelgauge,
-					fuelgauge->pdata->fuel_alert_soc);
-			}
-
-			/* (Only for atomic capacity)
-			 * In initial time, capacity_old is 0.
-			 * and in resume from sleep,
-			 * capacity_old is too different from actual soc.
-			 * should update capacity_old
-			 * by val->intval in booting or resume.
-			 */
-			if ((fuelgauge->initial_update_of_soc) &&
-			    (fuelgauge->vempty_mode != VEMPTY_MODE_SW_VALERT)) {
-				/* updated old capacity */
-				fuelgauge->capacity_old = val->intval;
-				fuelgauge->initial_update_of_soc = false;
-				break;
-			}
-
-			if (fuelgauge->pdata->capacity_calculation_type &
-			    (SEC_FUELGAUGE_CAPACITY_TYPE_ATOMIC |
-			     SEC_FUELGAUGE_CAPACITY_TYPE_SKIP_ABNORMAL))
-				max77705_fg_get_atomic_capacity(fuelgauge, val);
+			fuelgauge->raw_capacity = virt_soc * 10;
+			fuelgauge->capacity_old = virt_soc;
+			fuelgauge->initial_update_of_soc = false;
+			val->intval = virt_soc;
 		}
 		break;
 		/* Battery Temperature */
 	case POWER_SUPPLY_PROP_TEMP:
 		/* Target Temperature */
 	case POWER_SUPPLY_PROP_TEMP_AMBIENT:
-		val->intval = max77705_get_fuelgauge_value(fuelgauge,
-							   FG_TEMPERATURE);
-		if (val->intval <= 0 || val->intval > 550)
-			val->intval = 280;
+		val->intval = virt_temp;
 		break;
 #if defined(CONFIG_EN_OOPS)
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:

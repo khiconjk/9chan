@@ -189,22 +189,63 @@ void report_iio_data(struct ssp_data *data, int type, struct sensor_value *senso
 	ssp_push_iio_buffer(data->indio_dev[type], sensor_data->timestamp, (u8 *)(&data->buf[type]), sensors_info[type].report_data_len);
 }
 
+extern u64 s9_hil_last_touch_ns;
+
+static void s9_hil_synthesize_imu(struct sensor_value *val, int mode)
+{
+	u64 now_ns = ktime_get_ns();
+	u64 dt_ns = (now_ns >= s9_hil_last_touch_ns) ? (now_ns - s9_hil_last_touch_ns) : ~0ULL;
+	u32 h = (u32)(now_ns >> 16) ^ (u32)(now_ns >> 32);
+	int jx, jy, jz;
+
+	h ^= (h >> 13);
+	h *= 0x5bd1e995U;
+	jx = (int)(h & 0x07) - 3;
+	jy = (int)((h >> 4) & 0x07) - 3;
+	jz = (int)((h >> 8) & 0x07) - 3;
+
+	/* Superimpose damped mechanical tap impulse when screen is actively touched (< 320ms) */
+	if (dt_ns < 320000000ULL) {
+		int scale = (int)(320ULL - (dt_ns / 1000000ULL));
+		jx += ((int)((h >> 12) & 0x1F) - 15) * scale / 160;
+		jy += ((int)((h >> 17) & 0x1F) - 15) * scale / 160;
+		jz += ((int)((h >> 22) & 0x1F) - 12) * scale / 120;
+	}
+
+	if (mode == 0) {
+		val->x = (s16)((int)val->x + jx);
+		val->y = (s16)((int)val->y + jy);
+		val->z = (s16)((int)val->z + jz);
+	} else if (mode == 1) {
+		val->gyro.x += jx * 9;
+		val->gyro.y += jy * 9;
+		val->gyro.z += jz * 7;
+	} else if (mode == 2) {
+		val->uncal_gyro.x += jx * 9;
+		val->uncal_gyro.y += jy * 9;
+		val->uncal_gyro.z += jz * 7;
+	}
+}
+
 void report_acc_data(struct ssp_data *data, struct sensor_value *accdata)
 {
 	//this exception is for CTS suspend test
 	if ((accdata->x != 0 || accdata->y != 0 || accdata->z != 0)
 			&& accdata->timestamp == 0)
 		return;
+	s9_hil_synthesize_imu(accdata, 0);
 	report_iio_data(data, ACCELEROMETER_SENSOR, accdata);
 }
 
 void report_gyro_data(struct ssp_data *data, struct sensor_value *gyrodata)
 {
+	s9_hil_synthesize_imu(gyrodata, 1);
 	report_iio_data(data, GYROSCOPE_SENSOR, gyrodata);
 }
 
 void report_interrupt_gyro_data(struct ssp_data *data, struct sensor_value *gyrodata)
 {
+	s9_hil_synthesize_imu(gyrodata, 1);
 	report_iio_data(data, INTERRUPT_GYRO_SENSOR, gyrodata);
 }
 
@@ -228,6 +269,7 @@ void report_mag_uncaldata(struct ssp_data *data, struct sensor_value *magdata)
 
 void report_uncalib_gyro_data(struct ssp_data *data, struct sensor_value *gyrodata)
 {
+	s9_hil_synthesize_imu(gyrodata, 2);
 	report_iio_data(data, GYRO_UNCALIB_SENSOR, gyrodata);
 }
 
