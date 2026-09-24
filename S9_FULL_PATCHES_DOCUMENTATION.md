@@ -1354,4 +1354,30 @@ Thực thi trọn vẹn đặc tả kỹ thuật [`CODEX_IMPLEMENTATION_SPEC_5_M
   - **Ràng buộc IEEE Samsung OUI & Cặp địa chỉ MAC liền kề (`generateSamsungMacPair`):** Địa chỉ `wifi.mac` luôn sử dụng 3 byte đầu thuộc dải OUI thật của Samsung Electronics (`98:0c:82`, `d0:c1:b1`, `70:28:8b`, `e4:58:e7`, `24:f5:aa`, `50:01:d9`, `a8:7c:01`), và địa chỉ Bluetooth `bt.mac` luôn bằng chính xác `wifi.mac + 1` (ví dụ `98:0c:82:4b:19:c2` và `98:0c:82:4b:19:c3`), khớp với thiết kế chip combo Broadcom BCM4375.
   - **Đồng bộ hóa mật độ điểm ảnh & Baseband theo Model (`s9_ghost_harmonize_properties`):** Tự động khóa `ro.sf.lcd_density` (`570` cho S9, `529` cho S9+, `516` cho Note 9) và hậu tố Baseband (`XXUHFVB4` cho bản Quốc tế `F`, `KOU5FVA1` cho bản Hàn Quốc `N`).
 
+---
+
+## PHẦN 12: STEALTH TRANSPARENT PROXY (ZERO VPN FLAG / KHÔNG TẠO GIAO DIỆN `tun0` / CHỐNG RÒ RỈ QUIC & WEBRTC)
+
+### 12.1. Vấn đề của các ứng dụng Proxy truyền thống trên Android (`SocksDroid` / `V2Ray` / `Clash`)
+* Các ứng dụng proxy chạy ở không gian người dùng (như `net.typeblog.socks` / `SocksDroid` sử dụng `libtun2socks.so`) bắt buộc phải gọi `android.net.VpnService` để tạo giao diện mạng ảo `tun0` (`inet 26.26.26.1/24`).
+* Hệ quả:
+  1. `NetworkInterface.getNetworkInterfaces()` và `/proc/net/dev` xuất hiện giao diện `tun0`.
+  2. `ConnectivityManager.getNetworkCapabilities()` bật cờ `NetworkCapabilities.TRANSPORT_VPN = true` và hiển thị biểu tượng chìa khóa VPN trên thanh trạng thái.
+  3. Các ứng dụng kiểm tra nghiêm ngặt (Shopee, TikTok, ngân hàng) lập tức phát hiện thiết bị đang sử dụng VPN/Proxy.
+
+### 12.2. Kiến trúc Stealth Transparent Proxy (`/data/adb/redsocks` + `stealth_proxy.sh` + `iptables`)
+* **Tệp thực thi:** [`stealth_proxy.sh`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/stealth_proxy.sh), `/data/adb/redsocks` (`redsocks_patched`), [`fastboot_seed.sh`](file:///w:/home/khiconjk/Samsung%20S9/ss-S9/fastboot_seed.sh) & [`RecoveryHelper.java`](file:///D:/ROM/pchanger/RecoveryHelper.java).
+* **Bản vá Binary `redsocks` (`offset 0xab90`):**
+  - Binary `/system/bin/redsocks` gốc của Samsung gọi `setsockopt(fd, SOL_TCP, 42, ...)` (`MPTCP_ENABLED = 42`), gây lỗi `ENOPROTOOPT (Protocol not available)` trên Kernel không bật MPTCP.
+  - Bản vá nhị phân tại offset `0xab90` (`52800348 52800549` -> `52800028 52800029`) đổi `mov w8, #0x1a; mov w9, #0x2a` thành `mov w8, #0x1; mov w9, #0x1` (`TCP_NODELAY = 1`), đồng thời gắn cứng `lte_interface_name = wlan0;` trong khối `base { ... }` để `redsocks` đẩy toàn bộ kết nối ra thẳng card mạng vật lý `wlan0`.
+* **Cơ chế Hijack tự động `SocksDroid` (`net.typeblog.socks`) & `custom_proxy.txt`:**
+  - Kịch bản `/data/adb/stealth_proxy.sh` (chạy tự động ở chế độ `auto` và `daemon` ngầm mỗi 3 giây từ `fastboot_seed.sh`) tự động đọc cấu hình Proxy từ:
+    1. `D:\ROM\pchanger\data\info\custom_proxy.txt` / `/efs/ghost.conf` (`proxy.host`, `proxy.port`, `proxy.user`, `proxy.pass`, `proxy.type`), HOẶC
+    2. Trực tiếp từ `/data/data/net.typeblog.socks/shared_prefs/net.typeblog.socks_preferences.xml` (`server_ip`, `server_port`) nếu người dùng nhập Proxy qua ứng dụng `SocksDroid`.
+  - Ngay lập tức **tiêu diệt tiến trình `libtun2socks.so` & `net.typeblog.socks:vpn` và xóa giao diện `tun0`** (`ip link set tun0 down; ip link delete tun0`), xóa sạch hoàn toàn cờ `TRANSPORT_VPN`.
+  - Kiểm tra kết nối TCP tới cổng Proxy (`toybox nc -z -w 2 $PROXY_IP $PROXY_PORT`):
+    - Nếu Proxy đang hoạt động: Tự động nạp luật Kernel Netfilter `iptables` (`REDSOCKS` chuyển hướng toàn bộ TCP sang `127.0.0.1:1081`, `DNAT` cổng `UDP 53` về `8.8.8.8:53`, `REDSOCKS_FILTER` chặn `UDP 443/80 QUIC/HTTP3` và `UDP 3478/5349/19302:19309 WebRTC STUN`, `REDSOCKS6_FILTER` khóa rò rỉ IPv6).
+    - Nếu Proxy đã hết hạn hoặc tắt: Giữ nguyên trạng thái diệt `tun0` và cho phép mạng `wlan0` trực tiếp hoạt động bình thường để không làm mất kết nối Internet của máy.
+
+
 

@@ -187,6 +187,14 @@ EOF
             fi
         fi
     fi
+
+    # 3. Auto-sync Stealth Transparent Proxy (Zero VPN Flag / No tun0)
+    for sp in /system/bin/stealth_proxy.sh /data/adb/stealth_proxy.sh; do
+        if [ -f "$sp" ]; then
+            /system/bin/sh "$sp" auto >/dev/null 2>&1
+            break
+        fi
+    done
 }
 
 if [ -f /data/local/tmp/fix.sh ]; then
@@ -233,7 +241,17 @@ if [ "$1" = "--boot-completed" ]; then
         settings put secure android_id "$G_AID" 2>/dev/null
     fi
     
-    # Watchdog loop to guarantee 3 navigation buttons & anti-RILD overwrite
+    # Launch background Stealth Proxy guardian daemon (eliminates tun0/VPN & syncs redsocks)
+    for sp in /system/bin/stealth_proxy.sh /data/adb/stealth_proxy.sh; do
+        if [ -f "$sp" ]; then
+            if ! pgrep -f "stealth_proxy.sh daemon" >/dev/null 2>&1; then
+                /system/bin/sh "$sp" daemon >/dev/null 2>&1 &
+            fi
+            break
+        fi
+    done
+
+    # Watchdog loop to guarantee 3 navigation buttons, Stealth Proxy & anti-RILD overwrite
     (
         for t in 5 10 15 20 30 45 60 90; do
             sleep $t
@@ -245,6 +263,14 @@ if [ "$1" = "--boot-completed" ]; then
             settings put global development_settings_enabled 0 2>/dev/null
             if [ -f /proc/s9_serial ]; then
                 echo reload > /proc/s9_serial 2>/dev/null
+            fi
+            if [ "$t" = "10" ]; then
+                for sp in /system/bin/stealth_proxy.sh /data/adb/stealth_proxy.sh; do
+                    if [ -f "$sp" ]; then
+                        /system/bin/sh "$sp" auto >/dev/null 2>&1
+                        break
+                    fi
+                done
             fi
         done
     ) &
