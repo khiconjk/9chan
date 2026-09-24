@@ -1379,5 +1379,16 @@ Thực thi trọn vẹn đặc tả kỹ thuật [`CODEX_IMPLEMENTATION_SPEC_5_M
     - Nếu Proxy đang hoạt động: Tự động nạp luật Kernel Netfilter `iptables` (`REDSOCKS` chuyển hướng toàn bộ TCP sang `127.0.0.1:1081`, `DNAT` cổng `UDP 53` về `8.8.8.8:53`, `REDSOCKS_FILTER` chặn `UDP 443/80 QUIC/HTTP3` và `UDP 3478/5349/19302:19309 WebRTC STUN`, `REDSOCKS6_FILTER` khóa rò rỉ IPv6).
     - Nếu Proxy đã hết hạn hoặc tắt: Giữ nguyên trạng thái diệt `tun0` và cho phép mạng `wlan0` trực tiếp hoạt động bình thường để không làm mất kết nối Internet của máy.
 
+### 12.3. Giao diện điều khiển Stealth Proxy trực tiếp trên Pchanger (`Stealth Proxy UI Panel` & `Auto Sync GeoIP`)
+* **Tệp nguồn:** [`RecoveryHelper.java`](file:///D:/ROM/pchanger/RecoveryHelper.java) (`attachStealthProxyUi`, `buildStealthProxyPanel`, `handleCheckProxyClick`, `handleApplyProxyLiveClick`, `handleStopProxyLiveClick`), [`PatchLocationDialog.java`](file:///D:/ROM/pchanger/PatchLocationDialog.java) (hook vào `com.package.Oa.anyValidIdentifierName(Parent, Map)`).
+* **Tích hợp trên giao diện Pchanger (`Pchanger-4.4.jar`):**
+  1. **Khung điều khiển trực tiếp trên Tab `Change` (`layoutX=402, layoutY=20`):**
+     - Chọn giao thức (`SOCKS5` / `HTTP-CONNECT`), nút **`Hút từ máy`** (tự động đọc Proxy từ `SocksDroid` hoặc `/efs/ghost.conf` trên thiết bị), và ô nhập nhanh `IP:Port[:User:Pass]`.
+     - **Nút `Check Proxy & GeoIP`:** Kiểm tra kết nối TCP tới Proxy, đo độ trễ `Ping (ms)`, truy vấn thông tin địa lý từ `ip-api.com` và hiển thị trực tiếp `Public IP`, `Quốc gia / Thành phố`, `ISP / Nhà mạng SIM`, `Múi giờ (Timezone)`, và `Toạ độ GPS` trên bảng thông tin.
+     - **Tuỳ chọn `Auto Sync GeoIP (Quốc gia, SIM, Múi giờ, GPS)`:** Tự động ánh xạ `countryCode` & `ISP` của IP Proxy sang nhà mạng di động tương ứng (`mapGlobalCarrier`), cập nhật `ComboBox Country` trên UI, đồng bộ `persist.sys.timezone` (`service call alarm 3`), các thuộc tính SIM (`gsm.sim.operator.*`), và ghi toạ độ GPS (`onLocationDialogConfirm` + `GhostLoc`) khớp 100% với vị trí IP Proxy.
+     - **Nút `Bật Proxy Ngay (Live)` & `Tắt Proxy (Stop)`:** Cho phép đẩy `redsocks_patched` + `stealth_proxy.sh` và bật/tắt Stealth Transparent Proxy tức thì trên thiết bị đang kết nối ADB mà không cần đợi bấm `Change`.
+  2. **Menu `Options -> Stealth Proxy (No VPN)`:**
+     - Mở cửa sổ hộp thoại quản lý Stealth Proxy độc lập để thao tác nhanh từ bất kỳ tab nào.
+
 
 
