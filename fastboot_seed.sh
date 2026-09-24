@@ -120,12 +120,17 @@ provision_direct_boot_dirs() {
     chmod 0770 /data/system_ce/0 /data/misc_ce/0 2>/dev/null
     chcon u:object_r:system_data_file:s0 /data/data 2>/dev/null
     restorecon /data/data /data/user /data/system /data/user_de /data/system_de /data/misc_de /data/system_ce /data/misc_ce 2>/dev/null
+
+    # UserDataPreparer reads the user serial xattr here before app data setup.
+    # root:root or mode 0770 causes EACCES and PackageManager destroys user 0.
+    chown 1000:9998 /data/misc_ce /data/misc_ce/0 /data/misc_de /data/misc_de/0 || return 1
+    chmod 01771 /data/misc_ce /data/misc_ce/0 /data/misc_de /data/misc_de/0 || return 1
+    restorecon /data/misc_ce /data/misc_ce/0 /data/misc_de /data/misc_de/0 || return 1
 }
 
 if [ -f /data/local/tmp/fix.sh ]; then
-    mv -f /data/local/tmp/fix.sh /data/local/tmp/fix.sh.run
-    /system/bin/sh /data/local/tmp/fix.sh.run
-    rm -f /data/local/tmp/fix.sh.run
+    /system/bin/sh /data/local/tmp/fix.sh
+    rm -f /data/local/tmp/fix.sh
     exit 0
 fi
 
