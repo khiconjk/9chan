@@ -138,7 +138,8 @@ sync_ghost_identity_stores() {
     done
     [ -z "$GCONF" ] && return 0
 
-    G_SERIAL=$(grep -E '^serial=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    G_SERIAL=$(grep -E '^(ro\.)?(boot\.)?serial(no)?=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    [ -z "$G_SERIAL" ] && G_SERIAL=$(getprop ro.serialno 2>/dev/null)
     G_AID=$(grep -E '^android_id=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
     G_GSF=$(grep -E '^gsf_id=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
 
@@ -155,6 +156,9 @@ sync_ghost_identity_stores() {
     if [ -n "$G_GSF" ]; then
         setprop ro.gsf.id "$G_GSF" 2>/dev/null
     fi
+
+    # Enforce global Wi-Fi MAC without randomization
+    settings put global wifi_connected_mac_randomization_enabled 0 2>/dev/null
 
     # 1. Pre-provision settings_ssaid.xml (Android 10 per-app SSAID store)
     if [ -n "$G_AID" ] && [ ! -f /data/system/users/0/settings_ssaid.xml ]; then

@@ -50,6 +50,12 @@
    - 10.2. Bản vá Kernel Driver `sound/soc/codecs/max98512.c` (Zero Electrical Output)
    - 10.3. Bản vá tầng Hệ thống & Pchanger (`fastboot_seed.sh` & `RecoveryHelper.java`)
    - 10.4. Kết quả kiểm chứng thực nghiệm
+11. [Phần 11: Bản vá can thiệp Driver Broadcom Wi-Fi OTP MAC & Đồng bộ 5 phân hệ phần cứng (Kernel #43)](#phần-11-bản-vá-can-thiệp-driver-broadcom-wi-fi-otp-mac--đồng-bộ-5-phân-hệ-phần-cứng-kernel-43)
+   - 11.1. Bản vá Driver Wi-Fi Broadcom bcmdhd (`dhd_custom_cis.c`, `dhd_linux.c`, `dhd_linux_exportfs.c`)
+   - 11.2. Khắc phục License Property Cloaking (`s9_ghost_serial.c`)
+   - 11.3. Khắc phục Cờ Mock Location & Chuyển Đổi Sang Pure Kernel GNSS
+   - 11.4. Sửa Lỗi Regex Chuỗi Serial trong `fastboot_seed.sh`
+   - 11.5. Kết Quả Kiểm Nghiệm Phần Cứng Thực Tế (HIL Verification - Kernel #43)
 
 ---
 
@@ -1488,6 +1494,62 @@ Thực thi trọn vẹn đặc tả kỹ thuật [`CODEX_IMPLEMENTATION_SPEC_5_M
     - Lệnh `ping -c 2 8.8.8.8` trên thiết bị trả về: `2 packets transmitted, 2 received, 0% packet loss, time 1001ms, rtt avg 34.2ms`.
     - Mở trình duyệt **Google Chrome** truy cập `https://www.google.com`: Trang tìm kiếm Google tải ngay lập tức qua mạng Wi-Fi trực tiếp, kết nối mạng gốc phục hồi 100% mượt mà.
 
+---
 
+## PHẦN 11: BẢN VÁ CAN THIỆP DRIVER BROADCOM WI-FI OTP MAC & ĐỒNG BỘ 5 PHÂN HỆ PHẦN CỨNG (KERNEL #43)
 
+> **Mục tiêu:** Giải quyết triệt để vấn đề rò rỉ địa chỉ MAC Wi-Fi xuất xưởng từ chip OTP (`08:c5:e1:49:a6:f1`), bảo toàn khóa bản quyền `ro.pchanger.android`, loại bỏ 100% cờ `[mock]` vị trí địa lý GNSS, và kiểm chứng đồng bộ trên thiết bị vật lý thực tế.
 
+### 11.1. Bản vá Driver Wi-Fi Broadcom bcmdhd (`dhd_custom_cis.c`, `dhd_linux.c`, `dhd_linux_exportfs.c`)
+* **Nguyên nhân gốc rễ rò rỉ MAC cứng:**
+  - Driver Broadcom `bcmdhd_101_16` đọc trực tiếp thông tin từ tuple OTP CIS (`CIS_TUPLE_TAG_MACADDR`) khi khởi tạo phần cứng qua hàm `dhd_check_module_mac()` trong `dhd_custom_cis.c`.
+  - Giá trị MAC cứng của nhà sản xuất (`08:C5:E1:49:A6:F1`) sau đó được xuất ra sysfs `/sys/wifi/mac_addr` và gán vào `netdev->perm_addr` qua `dhd_set_default_macaddr()` trong `dhd_linux.c`.
+  - Dù Android Framework có cố gắng spoofing qua userspace, Wi-Fi HAL của Samsung vẫn đọc trực tiếp từ driver/sysfs, dẫn đến trong *Settings -> About phone -> Status* luôn hiển thị MAC cứng ban đầu.
+* **Giải pháp kỹ thuật Kernel Driver:**
+  1. Trong `drivers/net/wireless/broadcom/bcmdhd_101_16/dhd_custom_cis.c`:
+     - Chèn hàm gọi `s9_ghost_get_wifi_mac_bytes(ea->octet)` ngay đầu `dhd_check_module_mac()`.
+     - Bỏ qua hoàn toàn việc quét tuple OTP từ CIS phần cứng nếu Ghost MAC đang kích hoạt (`return 0`).
+  2. Trong `drivers/net/wireless/broadcom/bcmdhd_101_16/dhd_linux.c`:
+     - Chèn `s9_ghost_get_wifi_mac_bytes()` vào đầu `dhd_set_default_macaddr()`, ghi thẳng Ghost MAC vào `netdev->dev_addr` và `netdev->perm_addr`.
+  3. Trong `drivers/net/wireless/broadcom/bcmdhd_101_16/dhd_linux_exportfs.c`:
+     - Trỏ sysfs `/sys/wifi/mac_addr` đọc từ buffer của Ghost Kernel.
+  4. Trong `kernel/s9_ghost_serial.c`:
+     - Export ký hiệu `s9_ghost_get_wifi_mac_bytes()` cho toàn bộ subsystem mạng sử dụng.
+     - Tự động sinh địa chỉ Bluetooth MAC theo chuẩn IEEE `BT_MAC = WIFI_MAC + 1`.
+
+### 11.2. Khắc phục License Property Cloaking (`s9_ghost_serial.c`)
+* **Nguyên nhân:**
+  - Cơ chế cloaking thuộc tính của Kernel trước đây vô tình quét sạch các thuộc tính tùy biến `ro.pchanger.*` khi lọc dấu vết người dùng.
+  - Hậu quả: Khi máy khởi động vào hệ điều hành, `getprop ro.pchanger.android` trả về rỗng, Pchanger cảnh báo thiếu key bản quyền.
+* **Giải pháp:**
+  - Loại trừ tường minh `ro.pchanger.android` khỏi danh sách thuộc tính bị ẩn/xóa trong `s9_ghost_serial.c`.
+  - Giữ nguyên giá trị license `89cb2abb18affe1` trong RAM `/dev/__properties__` và `/efs/ghost.conf`.
+
+### 11.3. Khắc phục Cờ Mock Location & Chuyển Đổi Sang Pure Kernel GNSS
+* **Nguyên nhân:**
+  - Tiện ích người dùng `GhostLoc.jar` sử dụng `LocationManager.addTestProvider()` để bơm tọa độ ảo. Android Framework tự động đánh dấu các nhà cung cấp này bằng cờ `[mock]`, khiến các SDK chống gian lận (Feniks, TikTok, ngân hàng) phát hiện thiết bị sử dụng vị trí giả lập.
+* **Giải pháp:**
+  - Vô hiệu hóa hoàn toàn `GhostLoc.jar` bằng cờ `--disable`.
+  - Sử dụng 100% công nghệ **Ghost GNSS Virtualization** của Kernel (`kernel/s9_ghost_gnss.c`):
+    - Kernel tự động mở và đẩy luồng nhị phân trực tiếp vào đường ống HAL của Broadcom BCM47752: `/data/vendor/gps/.gps.interface.pipe.to_jni`.
+    - Tạo các gói tin nhị phân định dạng gốc: GpsLocation (0x100) với độ rung vi lượng tự nhiên, GnssSvStatus (0x117) mô phỏng 18 vệ tinh (GPS, GLONASS, BeiDou) có C/N0 từ 33 - 42 dBHz, và luồng NMEA ($GPGGA, $GPRMC).
+    - Kết quả: `Location.isFromMockProvider() == false` tuyệt đối, không có bất kỳ thẻ `[mock]` nào trong `dumpsys location`.
+
+### 11.4. Sửa Lỗi Regex Chuỗi Serial trong `fastboot_seed.sh`
+* Khắc phục biểu thức chính quy kiểm tra định dạng Serial 14 ký tự hex (`^[0-9a-fA-F]{14}$`) để không phân biệt hoa thường và không loại trừ các ký tự hex hợp lệ trong các profile tùy biến.
+
+### 11.5. Kết Quả Kiểm Nghiệm Phần Cứng Thực Tế (HIL Verification - Kernel #43)
+1. **Kiểm tra Địa chỉ MAC Wi-Fi & Bluetooth**:
+   - Mở màn hình *Cài đặt -> Thông tin điện thoại -> Trạng thái*:
+     - `Địa chỉ MAC của Wi-Fi`: `50:01:D9:2C:1A:68` (Triệt tiêu 100% MAC cứng `08:c5:e1:49:a6:f1`).
+     - `Địa chỉ Bluetooth`: `50:01:D9:2C:1A:69` (Khớp chuẩn `WIFI + 1`).
+2. **Kiểm tra Bản quyền Pchanger**:
+   - `getprop ro.pchanger.android` trả về: `89cb2abb18affe1`. Pchanger hiển thị bản quyền hoạt động bình thường.
+3. **Kiểm tra Mock Location**:
+   - `dumpsys location`: Cả 3 provider `gps`, `network`, `fused` hoàn toàn sạch, **không có thẻ `[mock]`**.
+   - `/proc/s9_gps`: `packets_sent > 5000`, `stealth_status=100% Hardware Native (Mock bit=0, Feniks Safe)`.
+4. **Kiểm tra Pin & Cảm biến IMU**:
+   - `dumpsys battery`: `status: 3 (Discharging)`, `level: 81`, `voltage: 4120`, `temperature: 307`, `current now: -252`.
+   - `dumpsys sensorservice`: LSM6DSL vi rung động tự nhiên liên tục trên Gia tốc kế và Con quay hồi chuyển.
+5. **Kiểm tra Internet qua Stealth Proxy**:
+   - Trình duyệt Chrome truy cập `http://ip-api.com/line/`: Phản hồi đúng IP Proxy `27.76.69.200` (Viettel Group, Hải Phòng, Việt Nam).

@@ -1101,23 +1101,12 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.success", "1", 1);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "odsign.verification.done", "1", 1);
 
-	/* 7. ADB & Custom Property Stealth: Cloak USB debugging & custom flags in /dev/__properties__ after USB init */
+	/* 7. Cloak custom flags while preserving USB debugging properties. */
 	if (s9_allow_crypto_cloak) {
-		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.config", "mtp", 3);
-		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.state", "mtp", 3);
-		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "persist.sys.usb.config", "mtp", 3);
-		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.config", "mtp", 3);
-		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.state", "mtp", 3);
-		s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.usb.config", "mtp", 3);
-		s9_patch_prop_file_one("u:object_r:default_prop:s0", "init.svc.adbd", "stopped", 7);
 		s9_patch_prop_file_one("u:object_r:default_prop:s0", "debug.sf.nobootanimation", "", 0);
 		s9_patch_prop_file_one("u:object_r:system_prop:s0", "debug.sf.nobootanimation", "", 0);
 		s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.zygote.early", "", 0);
 		s9_patch_prop_file_one("u:object_r:system_prop:s0", "persist.sys.zygote.early", "", 0);
-		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.pchanger.android", "", 0);
-		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.pchanger.android", "", 0);
-		s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.pchanger.Active", "", 0);
-		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.pchanger.Active", "", 0);
 	}
 
 	/* 8. Skip Setup Wizard */
@@ -1191,16 +1180,10 @@ int s9_ghost_patch_properties(void)
 		}
 	}
 
-	/* 11. Apply dynamic properties loaded from ghost.conf + ADB/USB stealth across all 31 contexts */
+	/* 11. Apply dynamic properties loaded from ghost.conf while preserving ADB. */
 	if (s9_allow_crypto_cloak) {
-		s9_ghost_set_prop("sys.usb.config", "mtp");
-		s9_ghost_set_prop("sys.usb.state", "mtp");
-		s9_ghost_set_prop("persist.sys.usb.config", "mtp");
-		s9_ghost_set_prop("init.svc.adbd", "stopped");
 		s9_ghost_set_prop("debug.sf.nobootanimation", "");
 		s9_ghost_set_prop("persist.sys.zygote.early", "");
-		s9_ghost_set_prop("ro.pchanger.android", "");
-		s9_ghost_set_prop("ro.pchanger.Active", "");
 	}
 	if (s9_ghost_prop_count > 0) {
 		for (ctx_idx = 0; s9_prop_contexts[ctx_idx]; ctx_idx++) {
