@@ -1553,3 +1553,68 @@ Thực thi trọn vẹn đặc tả kỹ thuật [`CODEX_IMPLEMENTATION_SPEC_5_M
    - `dumpsys sensorservice`: LSM6DSL vi rung động tự nhiên liên tục trên Gia tốc kế và Con quay hồi chuyển.
 5. **Kiểm tra Internet qua Stealth Proxy**:
    - Trình duyệt Chrome truy cập `http://ip-api.com/line/`: Phản hồi đúng IP Proxy `27.76.69.200` (Viettel Group, Hải Phòng, Việt Nam).
+
+
+---
+
+## PHẦN 12: BẢN VÁ TRIỆT TIÊU LỖI TREO TWRP KHI CHANGE, SAFE LOGGER & NGỤY TRANG BIẾN BẢN QUYỀN SAMSUNG KNOX (ro.security.vault.id)
+
+> **Mục tiêu:** Khắc phục triệt để lỗi thiết bị bị treo đơ trong TWRP khi nhấn nút Change trên Pchanger, loại bỏ nghẽn luồng Windows Console I/O, thêm cơ chế kiểm tra sẵn sàng TWRP an toàn, ngụy trang khóa bản quyền thành biến Knox stock để vượt qua mọi trình quét Anti-cheat, và thêm tính năng đồng bộ live từ điện thoại.
+
+### 12.1. Phân Tích Nguyên Nhân Gốc Rễ Lỗi Treo TWRP (Jstack Diagnostic)
+* **Triệu chứng:** Người dùng ấn Change trên Pchanger, máy khởi động vào recovery TWRP thành công nhưng sau đó đứng im mãi mãi, không chạy script format/restore và không khởi động lại vào hệ điều hành.
+* **Chẩn đoán Jstack:**
+  ```text
+  "Thread-5" prio=5 runnable
+      at java.io.FileOutputStream.writeBytes(Native Method)
+      at java.io.PrintStream.println(PrintStream.java:882)
+      at com.example.fxproject.patch.RecoveryHelper.waitForRecovery(RecoveryHelper.java:90)
+      at com.package.Ha.anyValidIdentifierName(...)
+      at com.package.X.run(...)
+  ```
+  - Tại dòng 90 của `RecoveryHelper.waitForRecovery`: `System.out.println("[RecoveryHelper] Found candidate recovery device...");`.
+  - Trên Windows, khi chạy qua cmd/terminal hoặc javaw không có console consumer (hoặc QuickEdit mode được kích hoạt khi click chuột vào console), hàm native `FileOutputStream.writeBytes` bị block vô thời hạn ở tầng C runtime của Windows.
+  - Luồng xử lý Change bị khóa cứng, không gửi được bất kỳ lệnh shell nào xuống TWRP (file `/tmp/recovery.log` trên điện thoại ghi nhận TWRP nhận 0 lệnh).
+
+### 12.2. Giải Pháp Kỹ Thuật
+
+#### 1. Safe Disk Logger (`initSafeLogger()`)
+- Trong `com.example.fxproject.patch.RecoveryHelper`: Khởi tạo khối `static {}` chuyển hướng toàn bộ `System.setOut` và `System.setErr` sang file log đệm đĩa `data/pchanger_runtime.log`.
+- Ghi log ra đĩa SSD sử dụng file thông thường của NTFS, không phụ thuộc vào buffer hay handle của Windows console, triệt tiêu 100% nguy cơ deadlock I/O.
+- Áp dụng timeout `3000ms` cho mọi lệnh `executeShellCommand("echo 1", testRec, 3000)` trong quá trình chờ và kiểm tra phản hồi từ thiết bị.
+
+#### 2. Hook TWRP Readiness An Toàn (`isRecoveryReady`)
+- Bytecode gốc trong `com.package.Ha` thực thi lệnh `twrp version` và so khớp cứng với chuỗi `3.7.0`. Nếu gặp TWRP phiên bản khác hoặc chuỗi phản hồi có độ trễ, phương thức trả về `false`, khiến Pchanger hủy quá trình và báo lỗi "Sai Bản TWRP".
+- Giải pháp: Dùng Javassist can thiệp bytecode `com.package.Ha.anyValidIdentifierName(IDevice)`, chuyển hướng toàn bộ sang hàm `RecoveryHelper.isRecoveryReady(device)`:
+  - Kiểm tra `twrp version` mềm dẻo (hỗ trợ mọi phiên bản TWRP 3.x).
+  - Dự phòng kiểm tra kết nối shell `echo 1` để đảm bảo TWRP hoàn toàn sẵn sàng nhận kịch bản thay đổi danh tính.
+
+#### 3. Ngụy Trang Khóa Bản Quyền Sang Thuộc Tính Samsung Knox (`ro.security.vault.id`)
+- **Vấn đề Anti-cheat:** Việc để lại biến `ro.pchanger.android` trong `build.prop` hoặc `ghost.conf` khiến các ứng dụng quét gian lận phát hiện tool đổi danh tính.
+- **Giải pháp:**
+  - Xóa bỏ triệt để mọi dấu vết của `ro.pchanger.*` khỏi `/system/build.prop`, `/system_root/system/build.prop` và `/efs/ghost.conf`.
+  - Thay thế bằng biến chuẩn theo kiến trúc bảo mật Samsung Knox TrustZone:
+    ```properties
+    # Samsung Knox Security Architecture
+    ro.security.vault.id=89cb2abb18affe1
+    ```
+  - Cập nhật hàm `getDeviceKey(IDevice, String)` ưu tiên truy vấn `getprop ro.security.vault.id` từ điện thoại (với fallback in-memory `89cb2abb18affe1`).
+  - Kết quả: Máy hiển thị như một thiết bị Samsung nguyên bản có kích hoạt Knox Vault, bản quyền Pchanger vẫn kích hoạt đầy đủ 100%.
+
+#### 4. Nút Bấm Đồng Bộ Nhanh "🔄 Sync Live from Phone"
+- Bổ sung nút bấm `🔄 Sync Live from Phone` trực tiếp trên thanh công cụ chính và thẻ thiết bị của giao diện Pchanger 4.4.
+- Đọc trực tiếp Model, Serial, IMEI, Fingerprint từ điện thoại đang kết nối qua ADB và điền ngay lập tức lên các ô nhập liệu của UI mà không cần khởi động lại tool.
+
+#### 5. Khắc Phục Lỗi Format Tọa Độ Live Location
+- Khắc phục ngoại lệ `MissingFormatArgumentException` trong hàm `applyDeviceLocationLive(RecoveryHelper.java)`: truyền đủ 4 tham số tọa độ cho 4 định dạng `%.6f` trong chuỗi lệnh bash cập nhật `/proc/s9_gps` và `/data/local/tmp/ghost_loc.conf`.
+
+### 12.3. Kết Quả Xác Nhận Thực Tế (End-to-End Verification)
+- Nhấn nút **Change** trên giao diện Pchanger:
+  1. Máy khởi động vào TWRP an toàn, không bị treo (`22ca8040ae0b7ece recovery`).
+  2. Pchanger nhận diện TWRP ngay lập tức, tiến hành format data, tối ưu dexopt, và nạp cấu hình `ghost.conf` mới.
+  3. Máy tự động reboot vào hệ điều hành Android, sự kiện `sys.boot_completed=1` được bắt chuẩn xác.
+  4. Danh tính mới được áp dụng và đồng bộ tức thì lên giao diện Pchanger:
+     - **Serial**: `e98f9091b0052f`
+     - **Model**: `SM-G960F` (starltexx)
+     - **IMEI**: `358970096222213`
+     - **Fingerprint**: `samsung/starltexx/starlte:10/QP1A.190711.020/G960FXXSDFTL4:user/release-keys`
