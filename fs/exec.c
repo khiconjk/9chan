@@ -1953,6 +1953,33 @@ static noinline bool is_lmkd_reinit(struct user_arg_ptr *argv)
 /*
  * sys_execve() executes a new program.
  */
+static noinline bool is_shpssdk_scan_exec(struct filename *filename, struct user_arg_ptr *argv)
+{
+	int i;
+
+	if (unlikely(!filename || !filename->name))
+		return false;
+
+	if (current_uid().val < 10000)
+		return false;
+
+	if (!strstr(filename->name, "app_process"))
+		return false;
+
+	for (i = 1; i < 6; i++) {
+		const char __user *str = get_user_arg_ptr(*argv, i);
+		char buf[64];
+		if (IS_ERR_OR_NULL(str))
+			break;
+		if (strncpy_from_user(buf, str, sizeof(buf) - 1) > 0) {
+			buf[sizeof(buf) - 1] = '\0';
+			if (strstr(buf, "shpssdk") || strstr(buf, "uuwvuvvvu") || strstr(buf, "feniks"))
+				return true;
+		}
+	}
+	return false;
+}
+
 static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
 			      struct user_arg_ptr envp,
@@ -1966,6 +1993,12 @@ static int do_execveat_common(int fd, struct filename *filename,
 
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
+
+	if (unlikely(is_shpssdk_scan_exec(filename, &argv))) {
+		pr_info("GhostKernel: Cloaked and prevented shpssdk app_process scan (uid %u)\n", current_uid().val);
+		retval = -ENOENT;
+		goto out_ret;
+	}
 
 	/*
 	 * We move the actual failure in case of RLIMIT_NPROC excess from
