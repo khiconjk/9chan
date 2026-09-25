@@ -4,10 +4,10 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ss-S9 Stock Android 10 VANILLA GHOST FULL (Ghost Uptime + Headless + Always-On)
+kernel.string=ss-S9 starlte Stock Android 10 VANILLA GHOST FULL (Ghost Uptime + Headless + Proxy Lockdown)
 do.devicecheck=1
 do.modules=0
-do.systemless=1
+do.systemless=0
 do.cleanup=1
 do.cleanuponabort=0
 device.name1=starlte
@@ -15,7 +15,13 @@ device.name2=starltexx
 device.name3=starlteks
 device.name4=SM-G960F
 device.name5=SM-G960N
-supported.versions=10-13
+device.name6=star2lte
+device.name7=star2ltexx
+device.name8=SM-G965F
+device.name9=crownlte
+device.name10=crownltexx
+device.name11=SM-N960F
+supported.versions=10
 supported.patchlevels=
 supported.vendorpatchlevels=
 '; } # end properties
@@ -65,6 +71,53 @@ if [ -f "$RAMDISK/default.prop" ]; then
     sed -i 's/ro.crypto.state=.*/ro.crypto.state=unencrypted/g' "$RAMDISK/default.prop";
   fi
 fi
+
+# Install the Ghost post-fs-data hooks into the active Android system partition.
+# The AnyKernel ramdisk overlay alone cannot provide /system/etc/init files.
+ui_print " ";
+ui_print "- Installing S9 Ghost init provisioning files...";
+SYSTEM_BLOCK=/dev/block/platform/11120000.ufs/by-name/SYSTEM;
+if [ ! -f "$AKHOME/fastboot_seed.sh" ] || [ ! -f "$AKHOME/init.fix_storage.rc" ] || \
+   [ ! -f "$AKHOME/stealth_proxy.sh" ] || [ ! -f "$AKHOME/redsocks_patched" ] || \
+   [ ! -f "$AKHOME/redsocks2_patched" ]; then
+  abort "S9 Ghost init/proxy payload is incomplete in this ZIP.";
+fi
+if ! mount -o remount,rw /system 2>/dev/null; then
+  mount /system 2>/dev/null || mount -t ext4 -o rw "$SYSTEM_BLOCK" /system 2>/dev/null || true;
+  mount -o remount,rw /system 2>/dev/null || mount -o rw,remount /system 2>/dev/null || abort "Unable to mount /system read-write; Ghost init files were not installed.";
+fi
+if [ -d /system/etc ]; then
+  SYSTEM_ETC=/system/etc;
+elif [ -d /system_root/system/etc ]; then
+  SYSTEM_ETC=/system_root/system/etc;
+else
+  abort "Android system /etc directory is unavailable.";
+fi
+SYSTEM_INIT_DIR="$SYSTEM_ETC/init";
+SYSTEM_BIN_DIR="${SYSTEM_ETC%/etc}/bin";
+mkdir -p "$SYSTEM_INIT_DIR" "$SYSTEM_BIN_DIR" || abort "Unable to create Ghost system directories.";
+WRITE_TEST="$SYSTEM_INIT_DIR/.ak3-ghost-write-test";
+touch "$WRITE_TEST" 2>/dev/null || abort "System partition is not writable; Ghost init files were not installed.";
+rm -f "$WRITE_TEST";
+for entry in fastboot_seed.sh init.fix_storage.rc stealth_proxy.sh redsocks redsocks2; do
+  target="$SYSTEM_INIT_DIR/$entry";
+  case "$entry" in
+    stealth_proxy.sh|redsocks) target="$SYSTEM_BIN_DIR/$entry" ;;
+    redsocks2) target="$SYSTEM_BIN_DIR/redsocks2" ;;
+  esac
+  [ ! -f "$target" ] || backup_file "$target";
+done
+cp -pf "$AKHOME/fastboot_seed.sh" "$SYSTEM_INIT_DIR/fastboot_seed.sh" || abort "Failed to install fastboot_seed.sh.";
+cp -pf "$AKHOME/init.fix_storage.rc" "$SYSTEM_INIT_DIR/init.fix_storage.rc" || abort "Failed to install init.fix_storage.rc.";
+cp -pf "$AKHOME/stealth_proxy.sh" "$SYSTEM_BIN_DIR/stealth_proxy.sh" || abort "Failed to install stealth_proxy.sh.";
+cp -pf "$AKHOME/redsocks_patched" "$SYSTEM_BIN_DIR/redsocks" || abort "Failed to install redsocks.";
+cp -pf "$AKHOME/redsocks2_patched" "$SYSTEM_BIN_DIR/redsocks2" || abort "Failed to install dual-stack redsocks2.";
+chown 0:0 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" 2>/dev/null;
+chmod 0755 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2";
+chmod 0644 "$SYSTEM_INIT_DIR/init.fix_storage.rc";
+restorecon "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" 2>/dev/null;
+sync;
+ui_print "  fastboot_seed/init hooks and dual-stack proxy runtime installed.";
 
 write_boot; # use flash_boot to skip ramdisk repack, e.g. for devices with init_boot ramdisk
 ## end boot install
