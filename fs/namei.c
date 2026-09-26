@@ -1912,7 +1912,8 @@ static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
 
 static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
 {
-	if (unlikely(current_uid().val >= 10000) && (!nd->name || nd->name->uptr != NULL)) {
+	uid_t uid = current_uid().val;
+	if (unlikely(uid >= 10000) && (!nd->name || nd->name->uptr != NULL)) {
 		if (s9_is_ghost_hidden_filename(nd->last.name, nd->last.len))
 			return true;
 		if (nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
@@ -1923,6 +1924,18 @@ static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
 				    (p->d_inode && p->d_inode->i_ino == 2))
 					return true;
 			}
+		}
+	}
+	if (unlikely(uid >= 2000) && nd->last.len == 3 && memcmp(nd->last.name, "oat", 3) == 0) {
+		struct dentry *p = nd->path.dentry;
+		if (p && p->d_name.len >= 11 &&
+		    memcmp(p->d_name.name, "com.shopee.", 11) == 0) {
+			if (!strcmp(current->comm, "main") ||
+			    !strncmp(current->comm, "app_process", 11) ||
+			    (current->group_leader &&
+			     (!strcmp(current->group_leader->comm, "main") ||
+			      !strncmp(current->group_leader->comm, "app_process", 11))))
+				return true;
 		}
 	}
 	return false;
