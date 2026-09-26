@@ -484,6 +484,8 @@ static ssize_t
 show_mac_addr(struct dhd_info *dev, char *buf)
 {
 	ssize_t ret = 0;
+	extern bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf);
+	s9_ghost_get_wifi_mac_bytes(sysfs_mac_addr.octet);
 
 	ret = scnprintf(buf, PAGE_SIZE - 1, MACF,
 		(uint32)sysfs_mac_addr.octet[0], (uint32)sysfs_mac_addr.octet[1],

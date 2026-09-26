@@ -1153,6 +1153,18 @@ dhd_set_default_macaddr(dhd_pub_t *dhdp)
 
 	mac = &dhdp->mac;
 
+	{
+		extern bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf);
+		unsigned char ghost_mac[ETHER_ADDR_LEN];
+		if (s9_ghost_get_wifi_mac_bytes(ghost_mac)) {
+			memcpy(mac->octet, ghost_mac, ETHER_ADDR_LEN);
+#ifdef DHD_MAC_ADDR_EXPORT
+			memcpy(&sysfs_mac_addr, ghost_mac, sizeof(sysfs_mac_addr));
+#endif
+			return 0;
+		}
+	}
+
 	/* Read the default MAC address */
 	ret = dhd_iovar(dhdp, 0, "cur_etheraddr", NULL, 0, iovbuf, sizeof(iovbuf),
 			FALSE);
@@ -1213,6 +1225,23 @@ dhd_check_module_mac(dhd_pub_t *dhdp)
 	if (!dhd) {
 		DHD_ERROR(("%s: dhd is NULL\n", __FUNCTION__));
 		return BCME_BADARG;
+	}
+
+	{
+		extern bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf);
+		unsigned char ghost_mac[ETHER_ADDR_LEN];
+		if (s9_ghost_get_wifi_mac_bytes(ghost_mac)) {
+			memcpy(dhdp->mac.octet, ghost_mac, ETHER_ADDR_LEN);
+#ifdef DHD_MAC_ADDR_EXPORT
+			memcpy(&sysfs_mac_addr, ghost_mac, sizeof(sysfs_mac_addr));
+#endif
+			if (_dhd_set_mac_address(dhd, 0, dhdp->mac.octet) == 0) {
+				pr_info("S9Ghost: bcmdhd overridden with ghost MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+					ghost_mac[0], ghost_mac[1], ghost_mac[2],
+					ghost_mac[3], ghost_mac[4], ghost_mac[5]);
+			}
+			return 0;
+		}
 	}
 
 #if defined(DHD_READ_CIS_FROM_BP) && defined(READ_MACADDR)

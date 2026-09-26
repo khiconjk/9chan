@@ -1,0 +1,114 @@
+# ==============================================================================
+# S9 Ghost Kernel - Headless Always-On ADB & Fast First-Boot Engine
+# ==============================================================================
+
+on early-init
+    write /sys/block/sda/queue/read_ahead_kb 2048
+    write /sys/block/sda/queue/iostats 0
+
+on init
+    setprop persist.sys.disable_rescue true
+    setprop debug.sf.nobootanimation 1
+    setprop persist.sys.zygote.early true
+    write /sys/devices/system/cpu/cpufreq/policy0/scaling_governor performance
+    write /sys/devices/system/cpu/cpufreq/policy4/scaling_governor performance
+
+on post-fs-data
+    # 1. Native Direct Boot DE/CE & user directories initialization (prevents SQLITE_CANTOPEN_ENOENT[1294])
+    mkdir /data/data 0771 system system
+    mkdir /data/user 0711 system system
+    symlink /data/data /data/user/0
+    mkdir /data/user_de 0711 system system
+    mkdir /data/user_de/0 0771 system system
+    mkdir /data/system_de 0770 system system
+    mkdir /data/system_de/0 0770 system system
+    mkdir /data/misc_de 01771 system misc
+    mkdir /data/misc_de/0 01771 system misc
+    mkdir /data/misc_ce 01771 system misc
+    mkdir /data/misc_ce/0 01771 system misc
+    mkdir /data/system 0775 system system
+    mkdir /data/system/users 0775 system system
+    mkdir /data/system/users/0 0700 system system
+
+    # 1b. Direct Boot DE directories for Core System Providers (Telephony, Phone, Bluetooth, Settings, Contacts)
+    mkdir /data/user_de/0/com.android.providers.telephony 0700 radio radio
+    mkdir /data/user_de/0/com.android.providers.telephony/databases 0771 radio radio
+    mkdir /data/user_de/0/com.android.providers.telephony/files 0771 radio radio
+    mkdir /data/user_de/0/com.android.phone 0700 radio radio
+    mkdir /data/user_de/0/com.android.phone/cache 0771 radio radio
+    mkdir /data/user_de/0/com.android.phone/code_cache 0771 radio radio
+    mkdir /data/user_de/0/com.android.phone/databases 0771 radio radio
+    mkdir /data/user_de/0/com.android.bluetooth 0700 bluetooth bluetooth
+    mkdir /data/user_de/0/com.android.bluetooth/databases 0771 bluetooth bluetooth
+    mkdir /data/user_de/0/com.android.providers.settings 0700 system system
+    mkdir /data/user_de/0/com.android.providers.settings/databases 0771 system system
+    mkdir /data/user_de/0/com.android.settings 0700 system system
+    mkdir /data/user_de/0/com.android.settings/databases 0771 system system
+    mkdir /data/user_de/0/com.samsung.android.providers.contacts 0775 system system
+    mkdir /data/user_de/0/com.samsung.android.providers.contacts/databases 0775 system system
+    symlink /data/user_de/0/com.samsung.android.providers.contacts /data/user_de/0/com.android.providers.contacts
+
+    # 2. Native fallback for ADB keys & directories
+    mkdir /data/misc/adb 02750 system shell
+    copy /system/etc/adb_keys /data/misc/adb/adb_keys
+    chown system shell /data/misc/adb/adb_keys
+    chmod 0640 /data/misc/adb/adb_keys
+
+    # 3. Execute Fast First-Boot Seed Engine (unpacks dalvik-cache & provisions DE/CE settings if wiped)
+    exec -- /system/bin/sh /system/etc/init/fastboot_seed.sh
+
+    # 4. Force ADB USB configuration
+    setprop persist.sys.usb.config mtp
+    setprop sys.usb.config mtp,conn_gadget,adb
+    start adbd
+
+on boot
+    stop bootanim
+    stop powersnd
+    setprop service.bootanim.exit 1
+    setprop persist.sys.usb.config mtp
+    setprop sys.usb.config mtp,conn_gadget,adb
+    setprop service.adb.root 0
+    start adbd
+
+on property:sys.boot_completed=1
+    copy /system/etc/adb_keys /data/misc/adb/adb_keys
+    chown system shell /data/misc/adb/adb_keys
+    chmod 0640 /data/misc/adb/adb_keys
+    exec_background -- /system/bin/sh /system/etc/init/fastboot_seed.sh --boot-completed
+
+on property:debug.fix_storage=1
+    exec_background -- /system/bin/sh /system/etc/init/fastboot_seed.sh --fix
+    setprop debug.fix_storage 0
+
+# Anti-RILD Overwrite Triggers: force kernel ghost serial reload when modem daemons write props
+on property:ril.product_code=*
+    write /proc/s9_serial reload
+
+on property:ril.sw_ver=*
+    write /proc/s9_serial reload
+
+on property:vendor.ril.product_code=*
+    write /proc/s9_serial reload
+
+on property:vendor.ril.sw_ver=*
+    write /proc/s9_serial reload
+
+on property:sys.usb.config=mtp
+    setprop persist.sys.usb.config mtp
+    setprop sys.usb.config mtp,conn_gadget,adb
+    start adbd
+
+on property:sys.usb.config=mtp,conn_gadget
+    setprop persist.sys.usb.config mtp
+    setprop sys.usb.config mtp,conn_gadget,adb
+    start adbd
+
+on property:sys.usb.config=charging
+    setprop persist.sys.usb.config mtp
+    setprop sys.usb.config mtp,conn_gadget,adb
+    start adbd
+
+on property:sys.usb.config=none
+    setprop sys.usb.config mtp,conn_gadget,adb
+    start adbd

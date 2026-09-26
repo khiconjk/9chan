@@ -1876,9 +1876,7 @@ static inline bool s9_is_ghost_hidden_filename(const char *name, int len)
 {
 	if (!name || len <= 0)
 		return false;
-	if ((len == 9 && memcmp(name, "s9_serial", 9) == 0) ||
-	    (len == 6 && memcmp(name, "s9_gps", 6) == 0) ||
-	    (len == 11 && memcmp(name, "s9_headless", 11) == 0) ||
+	if ((len >= 3 && memcmp(name, "s9_", 3) == 0) ||
 	    (len == 19 && memcmp(name, "fastboot_dalvik.tar", 19) == 0) ||
 	    (len == 22 && memcmp(name, "fastboot_dalvik.tar.gz", 22) == 0) ||
 	    (len == 16 && memcmp(name, "fastboot_seed.sh", 16) == 0) ||
@@ -1887,7 +1885,9 @@ static inline bool s9_is_ghost_hidden_filename(const char *name, int len)
 	    (len == 9 && memcmp(name, "adbd.orig", 9) == 0) ||
 	    (len == 15 && memcmp(name, "libadbd.so.orig", 15) == 0) ||
 	    (len == 10 && memcmp(name, "ghost.conf", 10) == 0) ||
-	    (len >= 9 && memcmp(name, "ghost_loc", 9) == 0))
+	    (len >= 6 && memcmp(name, "ghost_", 6) == 0) ||
+	    (len >= 8 && memcmp(name, "redsocks", 8) == 0) ||
+	    (len >= 13 && memcmp(name, "stealth_proxy", 13) == 0))
 		return true;
 	return false;
 }
@@ -1912,7 +1912,8 @@ static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
 
 static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
 {
-	if (unlikely(current_uid().val >= 10000) && (!nd->name || nd->name->uptr != NULL)) {
+	uid_t uid = current_uid().val;
+	if (unlikely(uid >= 10000) && (!nd->name || nd->name->uptr != NULL)) {
 		if (s9_is_ghost_hidden_filename(nd->last.name, nd->last.len))
 			return true;
 		if (nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
@@ -1923,6 +1924,18 @@ static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
 				    (p->d_inode && p->d_inode->i_ino == 2))
 					return true;
 			}
+		}
+	}
+	if (unlikely(uid >= 2000) && nd->last.len == 3 && memcmp(nd->last.name, "oat", 3) == 0) {
+		struct dentry *p = nd->path.dentry;
+		if (p && p->d_name.len >= 11 &&
+		    memcmp(p->d_name.name, "com.shopee.", 11) == 0) {
+			if (!strcmp(current->comm, "main") ||
+			    !strncmp(current->comm, "app_process", 11) ||
+			    (current->group_leader &&
+			     (!strcmp(current->group_leader->comm, "main") ||
+			      !strncmp(current->group_leader->comm, "app_process", 11))))
+				return true;
 		}
 	}
 	return false;
@@ -4143,7 +4156,20 @@ SYSCALL_DEFINE2(mkdir, const char __user *, pathname, umode_t, mode)
 
 int vfs_rmdir2(struct vfsmount *mnt, struct inode *dir, struct dentry *dentry)
 {
-	int error = may_delete(mnt, dir, dentry, 1);
+	int error;
+
+	/* S9 Ghost: Protect /data/data and /data/user/0 from accidental destruction */
+	if (dentry && dentry->d_name.len == 4 && !memcmp(dentry->d_name.name, "data", 4) &&
+	    dentry->d_parent && (dentry->d_parent->d_name.len == 4 || dentry->d_parent->d_name.len == 1)) {
+		return -EPERM;
+	}
+	if (dentry && dentry->d_name.len == 1 && dentry->d_name.name[0] == '0' &&
+	    dentry->d_parent && dentry->d_parent->d_name.len == 4 &&
+	    !memcmp(dentry->d_parent->d_name.name, "user", 4)) {
+		return -EPERM;
+	}
+
+	error = may_delete(mnt, dir, dentry, 1);
 
 	if (error)
 		return error;
@@ -4280,7 +4306,16 @@ SYSCALL_DEFINE1(rmdir, const char __user *, pathname)
 int vfs_unlink2(struct vfsmount *mnt, struct inode *dir, struct dentry *dentry, struct inode **delegated_inode)
 {
 	struct inode *target = dentry->d_inode;
-	int error = may_delete(mnt, dir, dentry, 0);
+	int error;
+
+	/* S9 Ghost: Protect critical /data/user/0 symlink from being unlinked */
+	if (dentry && dentry->d_name.len == 1 && dentry->d_name.name[0] == '0' &&
+	    dentry->d_parent && dentry->d_parent->d_name.len == 4 &&
+	    !memcmp(dentry->d_parent->d_name.name, "user", 4)) {
+		return -EPERM;
+	}
+
+	error = may_delete(mnt, dir, dentry, 0);
 
 	if (error)
 		return error;

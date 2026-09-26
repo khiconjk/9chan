@@ -6809,6 +6809,13 @@ dhd_open(struct net_device *net)
 #endif
 
 		/* dhd_sync_with_dongle has been called in dhd_bus_start or wl_android_wifi_on */
+		{
+			extern bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf);
+			unsigned char ghost_mac[ETHER_ADDR_LEN];
+			if (s9_ghost_get_wifi_mac_bytes(ghost_mac)) {
+				memcpy(dhd->pub.mac.octet, ghost_mac, ETHER_ADDR_LEN);
+			}
+		}
 		memcpy(net->dev_addr, dhd->pub.mac.octet, ETHER_ADDR_LEN);
 
 #ifdef TOE
@@ -10991,6 +10998,12 @@ dhd_legacy_preinit_ioctls(dhd_pub_t *dhd)
 		ret = BCME_BADADDR;
 		goto done;
 	} else {
+		extern bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf);
+		unsigned char ghost_mac[ETHER_ADDR_LEN];
+		if (s9_ghost_get_wifi_mac_bytes(ghost_mac)) {
+			memcpy(dhd->mac.octet, ghost_mac, ETHER_ADDR_LEN);
+			memcpy(dhd->pub.mac.octet, ghost_mac, ETHER_ADDR_LEN);
+		}
 		(void)memcpy_s(dhd_linux_get_primary_netdev(dhd)->perm_addr, ETHER_ADDR_LEN,
 			dhd->mac.octet, ETHER_ADDR_LEN);
 	}

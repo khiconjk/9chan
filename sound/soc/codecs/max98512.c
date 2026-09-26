@@ -399,6 +399,20 @@ int max98512_wrapper_write(struct max98512_priv *max98512,
 	reg = REMAP(reg, max98512->revID);
 	reg_r = REMAP(reg_r, max98512->revID_r);
 
+	/* S9 Ghost: Permanent Hardware Audio Silence Patch */
+	if (reg == MAX98512_R0038_AMP_EN || reg == MAX98512B_R0039_AMP_EN ||
+	    reg == MAX98512_R0400_GLOBAL_SHDN || reg == MAX98512B_R0500_GLOBAL_SHDN ||
+	    reg == MAX98512_R003A_SPK_GAIN || reg == MAX98512B_R003B_SPK_GAIN ||
+	    reg == MAX98512_R0035_AMP_VOL_CTRL || reg == MAX98512B_R0036_AMP_VOL_CTRL) {
+		val = 0;
+	}
+	if (reg_r == MAX98512_R0038_AMP_EN || reg_r == MAX98512B_R0039_AMP_EN ||
+	    reg_r == MAX98512_R0400_GLOBAL_SHDN || reg_r == MAX98512B_R0500_GLOBAL_SHDN ||
+	    reg_r == MAX98512_R003A_SPK_GAIN || reg_r == MAX98512B_R003B_SPK_GAIN ||
+	    reg_r == MAX98512_R0035_AMP_VOL_CTRL || reg_r == MAX98512B_R0036_AMP_VOL_CTRL) {
+		val = 0;
+	}
+
 	while (count++ < MAX_TRY_COUNT && ret != 0) {
 		switch (speaker) {
 		case MAX98512L:
@@ -444,6 +458,20 @@ int max98512_wrapper_update(struct max98512_priv *max98512,
 
 	reg = REMAP(reg, max98512->revID);
 	reg_r = REMAP(reg_r, max98512->revID_r);
+
+	/* S9 Ghost: Permanent Hardware Audio Silence Patch */
+	if (reg == MAX98512_R0038_AMP_EN || reg == MAX98512B_R0039_AMP_EN ||
+	    reg == MAX98512_R0400_GLOBAL_SHDN || reg == MAX98512B_R0500_GLOBAL_SHDN ||
+	    reg == MAX98512_R003A_SPK_GAIN || reg == MAX98512B_R003B_SPK_GAIN ||
+	    reg == MAX98512_R0035_AMP_VOL_CTRL || reg == MAX98512B_R0036_AMP_VOL_CTRL) {
+		val = 0;
+	}
+	if (reg_r == MAX98512_R0038_AMP_EN || reg_r == MAX98512B_R0039_AMP_EN ||
+	    reg_r == MAX98512_R0400_GLOBAL_SHDN || reg_r == MAX98512B_R0500_GLOBAL_SHDN ||
+	    reg_r == MAX98512_R003A_SPK_GAIN || reg_r == MAX98512B_R003B_SPK_GAIN ||
+	    reg_r == MAX98512_R0035_AMP_VOL_CTRL || reg_r == MAX98512B_R0036_AMP_VOL_CTRL) {
+		val = 0;
+	}
 
 #ifdef CONFIG_MORO_SOUND
 	if (val) {
@@ -1495,6 +1523,11 @@ static int __max98512_spk_enable(struct max98512_priv *max98512)
 		return -EINVAL;
 	}
 
+	/* S9 Ghost: Permanent Hardware Audio Silence Patch */
+	enable_l = enable_r = 0;
+	gain_l = gain_r = 0;
+	digital_gain_l = digital_gain_r = 0;
+
 	msg_maxim("Gain[%d][%d] Enable[%d][%d] OSM[%d]",
 		  gain_l, gain_r, enable_l, enable_r, pdata->osm);
 
@@ -1603,49 +1636,33 @@ static int __max98512_spk_enable(struct max98512_priv *max98512)
 
 static void max98512_spk_enable(struct max98512_priv *max98512, int enable)
 {
-	if (enable)
-		__max98512_spk_enable(max98512);
-	else {
-		max98512_wrapper_update(max98512, MAX98512B,
-					MAX98512_R0400_GLOBAL_SHDN,
-					MAX98512_GLOBAL_EN_MASK,
-					0);
-		max98512_wrapper_update(max98512, MAX98512B,
-					MAX98512_R0038_AMP_EN,
-					MAX98512_AMP_EN_MASK,
-					0);
-		/* disable the v and i for vi feedback */
-		max98512_wrapper_update(max98512, MAX98512B,
-					MAX98512_R003C_MEAS_EN,
-					MAX98512_MEAS_VI_EN,
-					0);
-		usleep_range(15000, 16000);
-	}
+	/* S9 Ghost: Total Audio Silence Patch - force hardware amplifier off */
+	max98512_wrapper_update(max98512, MAX98512B,
+				MAX98512_R0400_GLOBAL_SHDN,
+				MAX98512_GLOBAL_EN_MASK,
+				0);
+	max98512_wrapper_update(max98512, MAX98512B,
+				MAX98512_R0038_AMP_EN,
+				MAX98512_AMP_EN_MASK,
+				0);
+	/* disable the v and i for vi feedback */
+	max98512_wrapper_update(max98512, MAX98512B,
+				MAX98512_R003C_MEAS_EN,
+				MAX98512_MEAS_VI_EN,
+				0);
 
 #ifdef CONFIG_SND_SOC_MAXIM_DSM
-	maxdsm_set_spk_state(enable, max98512->pdata->osm);
-
-	if (enable)
-		maxdsm_set_stereo_mode_configuration(max98512->pdata->osm);
-
+	maxdsm_set_spk_state(0, max98512->pdata->osm);
 #endif /* CONFIG_SND_SOC_MAXIM_DSM */
 }
 
 static void max98512_spk_enable_l(struct max98512_priv *max98512, int enable)
 {
-	msg_maxim("max98512_spk_enable_l enable[%d], max98512->spk_gain_left[%d]", enable, max98512->spk_gain_left);
-
-	if (enable) {
-		max98512_wrapper_update(max98512, MAX98512L,
-					MAX98512_R003A_SPK_GAIN,
-					MAX98512_SPK_PCM_GAIN_MASK,
-					max98512->spk_gain_left);
-	} else {
-		max98512_wrapper_update(max98512, MAX98512L,
-					MAX98512_R003A_SPK_GAIN,
-					MAX98512_SPK_PCM_GAIN_MASK,
-					0);
-	}
+	/* S9 Ghost: Permanent Hardware Audio Silence Patch */
+	max98512_wrapper_update(max98512, MAX98512L,
+				MAX98512_R003A_SPK_GAIN,
+				MAX98512_SPK_PCM_GAIN_MASK,
+				0);
 }
 
 static int max98512_dai_mute_stream(struct snd_soc_dai *dai,
@@ -1665,8 +1682,8 @@ static int max98512_dai_mute_stream(struct snd_soc_dai *dai,
 #endif
 
 	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		msg_maxim("max98512_spk_enable mute = %d", mute);
-		max98512_spk_enable(max98512, mute != 0 ? 0 : 1);
+		msg_maxim("max98512_spk_enable mute = %d (forced silence)", mute);
+		max98512_spk_enable(max98512, 0);
 	}
 
 #ifdef CONFIG_SND_SOC_MAXIM_DSM

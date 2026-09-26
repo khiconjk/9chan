@@ -28,6 +28,9 @@
 #include <linux/cdev.h>
 #include "input-compat.h"
 
+u64 s9_hil_last_touch_ns = 0;
+EXPORT_SYMBOL(s9_hil_last_touch_ns);
+
 enum evdev_clock_type {
 	EV_CLK_REAL = 0,
 	EV_CLK_MONO,
@@ -302,8 +305,10 @@ static void evdev_pass_values(struct evdev_client *client,
 				if (last_touch_ns && (now_ns - last_touch_ns) < 60000000ULL)
 					continue;
 				last_touch_ns = now_ns;
+				s9_hil_last_touch_ns = now_ns;
 			}
 		} else if (event.type == EV_ABS) {
+			s9_hil_last_touch_ns = ktime_get_ns();
 			if (event.code == ABS_MT_TOOL_TYPE && (event.value == 3 || event.value == 2))
 				event.value = 0; /* MT_TOOL_FINGER */
 		}
