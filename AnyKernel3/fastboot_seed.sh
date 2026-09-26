@@ -138,7 +138,8 @@ sync_ghost_identity_stores() {
     done
     [ -z "$GCONF" ] && return 0
 
-    G_SERIAL=$(grep -E '^serial=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    G_SERIAL=$(grep -E '^(ro\.)?(boot\.)?serial(no)?=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    [ -z "$G_SERIAL" ] && G_SERIAL=$(getprop ro.serialno 2>/dev/null)
     G_AID=$(grep -E '^android_id=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
     G_GSF=$(grep -E '^gsf_id=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
 
@@ -155,6 +156,9 @@ sync_ghost_identity_stores() {
     if [ -n "$G_GSF" ]; then
         setprop ro.gsf.id "$G_GSF" 2>/dev/null
     fi
+
+    # Enforce global Wi-Fi MAC without randomization
+    settings put global wifi_connected_mac_randomization_enabled 0 2>/dev/null
 
     # 1. Pre-provision settings_ssaid.xml (Android 10 per-app SSAID store)
     if [ -n "$G_AID" ] && [ ! -f /data/system/users/0/settings_ssaid.xml ]; then
@@ -191,11 +195,18 @@ EOF
 }
 
 sync_stealth_proxy() {
-    STAGED_CONF="/data/local/tmp/ghost_proxy.conf"
+    PROXY_DIR="/data/adb/s9_proxy"
+    mkdir -p "$PROXY_DIR" 2>/dev/null
+    chown -R root:shell "$PROXY_DIR" 2>/dev/null
+    chmod 0770 "$PROXY_DIR" 2>/dev/null
+    STAGED_CONF="$PROXY_DIR/ghost_proxy.conf"
+    if [ ! -f "$STAGED_CONF" ] && [ -f /data/local/tmp/ghost_proxy.conf ]; then
+        mv -f /data/local/tmp/ghost_proxy.conf "$STAGED_CONF" 2>/dev/null
+    fi
     PROXY_BIN="/system/bin/redsocks2"
     PROXY_SCRIPT="/system/bin/stealth_proxy.sh"
     [ -x /data/adb/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/stealth_proxy.sh"
-    [ -x /data/local/tmp/stealth_proxy.sh ] && PROXY_SCRIPT="/data/local/tmp/stealth_proxy.sh"
+    [ -x /data/adb/s9_proxy/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/s9_proxy/stealth_proxy.sh"
     GEO_TZ=""
     GEO_ISO=""
     GEO_ALPHA=""
@@ -204,9 +215,9 @@ sync_stealth_proxy() {
     GEO_LON=""
 
     if [ ! -x "$PROXY_BIN" ] || [ ! -x "$PROXY_SCRIPT" ]; then
-        echo "[ERROR] Missing installed proxy runtime: /system/bin/redsocks2 and /system/bin/stealth_proxy.sh are required." > /data/local/tmp/stealth_proxy.log
-        echo ERROR > /data/local/tmp/stealth_proxy.status
-        chmod 0644 /data/local/tmp/stealth_proxy.status 2>/dev/null
+        echo "[ERROR] Missing installed proxy runtime: /system/bin/redsocks2 and /system/bin/stealth_proxy.sh are required." > "$PROXY_DIR/stealth_proxy.log"
+        echo ERROR > "$PROXY_DIR/stealth_proxy.status"
+        chmod 0664 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
         return 1
     fi
 
@@ -233,7 +244,7 @@ sync_stealth_proxy() {
         chmod 0644 "$TMP_CONF" || return 1
         restorecon "$TMP_CONF" 2>/dev/null
         mv -f "$TMP_CONF" "$GCONF" || return 1
-        chmod 0644 "$STAGED_CONF" 2>/dev/null
+        chmod 0600 "$STAGED_CONF" 2>/dev/null
     fi
 
     case "$GEO_TZ" in *[!A-Za-z0-9_+/.-]*|'') ;; *)
@@ -256,14 +267,15 @@ sync_stealth_proxy() {
     if printf '%s\n' "$GEO_LAT" | grep -Eq '^-?[0-9]+(\.[0-9]+)?$' && \
        printf '%s\n' "$GEO_LON" | grep -Eq '^-?[0-9]+(\.[0-9]+)?$'; then
         if [ -e /proc/s9_gps ]; then echo "$GEO_LAT,$GEO_LON" > /proc/s9_gps 2>/dev/null; fi
-        mkdir -p /data/local/tmp 2>/dev/null
-        echo "$GEO_LAT $GEO_LON" > /data/local/tmp/ghost_loc.conf 2>/dev/null
-        chmod 0666 /data/local/tmp/ghost_loc.conf 2>/dev/null
+        mkdir -p /data/adb 2>/dev/null
+        echo "$GEO_LAT $GEO_LON" > /data/adb/ghost_loc.conf 2>/dev/null
+        chmod 0600 /data/adb/ghost_loc.conf 2>/dev/null
+        rm -f /data/local/tmp/ghost_loc.conf 2>/dev/null
     fi
 
     [ ! -x "$PROXY_SCRIPT" ] && return 1
     PROXY_ACTION="auto"
-    for p in /data/local/tmp/ghost_proxy.conf /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/adb/s9_proxy.conf; do
+    for p in "$STAGED_CONF" /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/adb/s9_proxy.conf /data/local/tmp/ghost_proxy.conf; do
         if [ -f "$p" ]; then
             if grep -qE '^proxy(\.action=stop|\.enabled=0)' "$p" 2>/dev/null; then
                 PROXY_ACTION="stop"
@@ -276,27 +288,32 @@ sync_stealth_proxy() {
         fi
     done
     rm -rf /dev/.s9_stealth_proxy.lock 2>/dev/null
-    "$PROXY_SCRIPT" "$PROXY_ACTION" >/data/local/tmp/stealth_proxy.log 2>&1
+    LOG_FILE="$PROXY_DIR/stealth_proxy.log"
+    STATUS_FILE="$PROXY_DIR/stealth_proxy.status"
+    "$PROXY_SCRIPT" "$PROXY_ACTION" >"$LOG_FILE" 2>&1
     PROXY_RC=$?
-    chmod 0644 /data/local/tmp/stealth_proxy.log 2>/dev/null
+    chmod 0660 "$LOG_FILE" 2>/dev/null
     if [ "$PROXY_RC" -ne 0 ]; then
-        if grep -q '^\[LOCKED\]' /data/local/tmp/stealth_proxy.log 2>/dev/null; then
-            echo BLOCKED > /data/local/tmp/stealth_proxy.status
+        if grep -q '^\[LOCKED\]' "$LOG_FILE" 2>/dev/null; then
+            echo BLOCKED > "$STATUS_FILE"
         else
-            echo ERROR > /data/local/tmp/stealth_proxy.status
+            echo ERROR > "$STATUS_FILE"
         fi
-    elif [ "$PROXY_ACTION" = "stop" ] || grep -q 'Proxy stopped' /data/local/tmp/stealth_proxy.log 2>/dev/null; then
-        echo STOPPED > /data/local/tmp/stealth_proxy.status
+    elif [ "$PROXY_ACTION" = "stop" ] || grep -q 'Proxy stopped' "$LOG_FILE" 2>/dev/null; then
+        echo STOPPED > "$STATUS_FILE"
     else
-        echo ACTIVE > /data/local/tmp/stealth_proxy.status
+        echo ACTIVE > "$STATUS_FILE"
     fi
-    chmod 0644 /data/local/tmp/stealth_proxy.status 2>/dev/null
+    chmod 0664 "$STATUS_FILE" 2>/dev/null
+
+    # Purge any leaked temporary/log files in /data/local/tmp
+    rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
     return "$PROXY_RC"
 }
 
 dump_proxy_rule_snapshot() {
-    SNAPSHOT="/data/adb/stealth_proxy.rules.snapshot"
-    mkdir -p /data/adb 2>/dev/null
+    SNAPSHOT="/data/adb/s9_proxy/stealth_proxy.rules.snapshot"
+    mkdir -p /data/adb/s9_proxy 2>/dev/null
     {
         echo "=== IPv4 nat OUTPUT ==="
         iptables -w 2 -t nat -nvL OUTPUT --line-numbers 2>&1
@@ -322,9 +339,8 @@ dump_proxy_rule_snapshot() {
         ip -6 rule show 2>&1
         ip -6 route show table 245 2>&1
     } > "$SNAPSHOT" 2>&1
-    chmod 0644 "$SNAPSHOT" 2>/dev/null
-    cp -f "$SNAPSHOT" /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
-    chmod 0644 /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
+    chmod 0600 "$SNAPSHOT" 2>/dev/null
+    rm -f /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
 }
 
 # Retire the old arbitrary root-script handoff. Live updates now use the fixed
@@ -377,7 +393,7 @@ if [ "$1" = "--boot-completed" ]; then
     fi
     
     # Launch background Stealth Proxy guardian daemon (eliminates tun0/VPN & syncs redsocks)
-    for sp in /data/local/tmp/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
+    for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
         if [ -x "$sp" ] || [ -f "$sp" ]; then
             if ! pgrep -f "stealth_proxy.sh daemon" >/dev/null 2>&1; then
                 /system/bin/sh "$sp" daemon >/dev/null 2>&1 &
@@ -400,7 +416,7 @@ if [ "$1" = "--boot-completed" ]; then
                 echo reload > /proc/s9_serial 2>/dev/null
             fi
             if [ "$t" = "10" ]; then
-                for sp in /data/local/tmp/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
+                for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
                     if [ -x "$sp" ] || [ -f "$sp" ]; then
                         /system/bin/sh "$sp" auto >/dev/null 2>&1
                         break

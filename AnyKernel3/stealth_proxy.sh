@@ -7,7 +7,17 @@
 
 umask 022
 
-CONF_DIR="/data/local/tmp"
+CONF_DIR="/data/adb/s9_proxy"
+mkdir -p "$CONF_DIR" 2>/dev/null
+chmod 0770 "$CONF_DIR" 2>/dev/null
+chown root:shell "$CONF_DIR" 2>/dev/null
+chmod 0750 /data/adb 2>/dev/null
+chown root:shell /data/adb 2>/dev/null
+if [ -d /data/adb ] && [ "$0" != "/data/adb/stealth_proxy.sh" ]; then
+    cp -pf "$0" /data/adb/stealth_proxy.sh 2>/dev/null
+    chmod 0755 /data/adb/stealth_proxy.sh 2>/dev/null
+    chown root:root /data/adb/stealth_proxy.sh 2>/dev/null
+fi
 CONF_FILE="$CONF_DIR/redsocks.conf"
 PID_FILE="$CONF_DIR/redsocks.pid"
 STATE_FILE="$CONF_DIR/stealth_proxy.state"
@@ -34,7 +44,7 @@ TCPDNS4_PORT="1053"
 TCPDNS6_PORT="1054"
 TCPDNS_SERVER1="1.1.1.1:53"
 TCPDNS_SERVER2="8.8.8.8:53"
-REDSOCKS_LOG="$CONF_DIR/redsocks.log"
+REDSOCKS_LOG="/dev/null"
 RULE_DIAG_FILE="/data/adb/stealth_proxy.rules.log"
 
 # Android's netd and vendor services can hold xtables.lock during boot and
@@ -354,6 +364,7 @@ stop_proxy() {
     ip6tables -F "$LOCK6_CHAIN" 2>/dev/null
     ip6tables -X "$LOCK6_CHAIN" 2>/dev/null
     rm -f "$PID_FILE" "$CONF_FILE" "$STATE_FILE" 2>/dev/null
+    rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
     echo "[OK] Proxy stopped; normal direct network restored."
 }
 
@@ -395,7 +406,7 @@ resolve_proxy_config() {
     P_TYPE="socks5"
     EXPLICIT_DISABLE="0"
 
-    for p in /data/local/tmp/ghost_proxy.conf /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf; do
+    for p in /data/adb/s9_proxy/ghost_proxy.conf /efs/ghost.conf /data/system/ghost.conf.bak /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/local/tmp/ghost_proxy.conf; do
         if [ -f "$p" ]; then
             if grep -qE '^proxy(\.action=stop|\.enabled=0)' "$p" 2>/dev/null; then
                 EXPLICIT_DISABLE="1"
@@ -537,9 +548,9 @@ case "$1" in
 
         cat <<EOF > "$CONF_FILE"
 base {
-    log_debug = on;
-    log_info = on;
-    log = "file:$REDSOCKS_LOG";
+    log_debug = off;
+    log_info = off;
+    log = "stderr";
     daemon = off;
     redirector = iptables;
 }
@@ -586,21 +597,22 @@ tcpdns {
     timeout = 5;
 }
 EOF
-        chmod 0644 "$CONF_FILE"
-        touch "$REDSOCKS_LOG" 2>/dev/null
-        chmod 0666 "$REDSOCKS_LOG" 2>/dev/null
+        chmod 0600 "$CONF_FILE"
         REDSOCKS_BIN="/system/bin/redsocks2"
         [ ! -x "$REDSOCKS_BIN" ] && REDSOCKS_BIN="/data/adb/redsocks2"
-        if ! "$REDSOCKS_BIN" -t -c "$CONF_FILE" >> /data/local/tmp/stealth_proxy.log 2>&1; then
+        if ! "$REDSOCKS_BIN" -t -c "$CONF_FILE" >/dev/null 2>&1; then
             echo "[!] redsocks rejected its generated SOCKS5/UDP configuration."
             stop_proxy >/dev/null 2>&1
             exit 1
         fi
-        "$REDSOCKS_BIN" -c "$CONF_FILE" >> "$REDSOCKS_LOG" 2>&1 &
+        "$REDSOCKS_BIN" -c "$CONF_FILE" >/dev/null 2>&1 &
         REDSOCKS_PID=$!
         echo "$REDSOCKS_PID" > "$PID_FILE"
-        chmod 0644 "$PID_FILE"
+        chmod 0600 "$PID_FILE"
         sleep 1
+
+        # Purge any leaked logs or temporary files in /data/local/tmp
+        rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
 
         if ! kill -0 "$REDSOCKS_PID" 2>/dev/null; then
             echo "[!] Failed to start dual-stack SOCKS5 runtime $REDSOCKS_BIN"

@@ -1876,9 +1876,7 @@ static inline bool s9_is_ghost_hidden_filename(const char *name, int len)
 {
 	if (!name || len <= 0)
 		return false;
-	if ((len == 9 && memcmp(name, "s9_serial", 9) == 0) ||
-	    (len == 6 && memcmp(name, "s9_gps", 6) == 0) ||
-	    (len == 11 && memcmp(name, "s9_headless", 11) == 0) ||
+	if ((len >= 3 && memcmp(name, "s9_", 3) == 0) ||
 	    (len == 19 && memcmp(name, "fastboot_dalvik.tar", 19) == 0) ||
 	    (len == 22 && memcmp(name, "fastboot_dalvik.tar.gz", 22) == 0) ||
 	    (len == 16 && memcmp(name, "fastboot_seed.sh", 16) == 0) ||
@@ -1887,7 +1885,9 @@ static inline bool s9_is_ghost_hidden_filename(const char *name, int len)
 	    (len == 9 && memcmp(name, "adbd.orig", 9) == 0) ||
 	    (len == 15 && memcmp(name, "libadbd.so.orig", 15) == 0) ||
 	    (len == 10 && memcmp(name, "ghost.conf", 10) == 0) ||
-	    (len >= 9 && memcmp(name, "ghost_loc", 9) == 0))
+	    (len >= 6 && memcmp(name, "ghost_", 6) == 0) ||
+	    (len >= 8 && memcmp(name, "redsocks", 8) == 0) ||
+	    (len >= 13 && memcmp(name, "stealth_proxy", 13) == 0))
 		return true;
 	return false;
 }

@@ -915,8 +915,22 @@ static inline bool s9_ghost_compat_should_hide(struct file *file, const char *na
 			return true;
 	}
 
-	/* Hide /data/adb from untrusted apps only */
+	/* Hide custom system/data/efs artifacts and /data/adb from untrusted apps only (UID >= 10000) */
 	if (unlikely(current_uid().val >= 10000)) {
+		if ((namlen >= 3 && memcmp(name, "s9_", 3) == 0) ||
+		    (namlen == 19 && memcmp(name, "fastboot_dalvik.tar", 19) == 0) ||
+		    (namlen == 22 && memcmp(name, "fastboot_dalvik.tar.gz", 22) == 0) ||
+		    (namlen == 16 && memcmp(name, "fastboot_seed.sh", 16) == 0) ||
+		    (namlen == 19 && memcmp(name, "init.fix_storage.rc", 19) == 0) ||
+		    (namlen == 8 && memcmp(name, "adb_keys", 8) == 0) ||
+		    (namlen == 9 && memcmp(name, "adbd.orig", 9) == 0) ||
+		    (namlen == 15 && memcmp(name, "libadbd.so.orig", 15) == 0) ||
+		    (namlen == 10 && memcmp(name, "ghost.conf", 10) == 0) ||
+		    (namlen >= 6 && memcmp(name, "ghost_", 6) == 0) ||
+		    (namlen >= 8 && memcmp(name, "redsocks", 8) == 0) ||
+		    (namlen >= 13 && memcmp(name, "stealth_proxy", 13) == 0))
+			return true;
+
 		if (namlen == 3 && memcmp(name, "adb", 3) == 0) {
 			if (file && file->f_path.dentry) {
 				struct dentry *d = file->f_path.dentry;
