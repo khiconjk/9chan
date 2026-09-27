@@ -585,6 +585,7 @@ if [ ! -f /data/system/users/0/settings_global.xml ] || [ ! -d /data/dalvik-cach
 
     # Create Direct Boot DE/CE directories and pre-provision settings
     provision_direct_boot_dirs
+    scatter_package_install_times
 
     if [ ! -f /data/system/users/0/settings_global.xml ]; then
         cat << 'EOF' > /data/system/users/0/settings_global.xml
