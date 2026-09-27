@@ -18,7 +18,9 @@ for f in \
   fs/readdir.c \
   fs/compat.c \
   fs/exec.c \
+  fs/stat.c \
   fs/statfs.c \
+  fs/read_write.c \
   net/unix/af_unix.c \
   AnyKernel3/anykernel.sh \
   AnyKernel3/init.fix_storage.rc \

@@ -1730,6 +1730,12 @@ static bool s9_ghost_filter_dgram(void *data, size_t len)
 		return true;
 	}
 
+	/* Drop VaultKeeper custom kernel logs */
+	if (s9_memmem(data, len, "custom kernel", 13) ||
+	    (s9_memmem(data, len, "vaultkeeper", 11) && s9_memmem(data, len, "Permission denied", 17))) {
+		return true;
+	}
+
 	return false;
 }
 

@@ -4342,6 +4342,19 @@ int vfs_unlink2(struct vfsmount *mnt, struct inode *dir, struct dentry *dentry, 
 		return -EPERM;
 	}
 
+	/* S9 Ghost: Protect critical dev nodes (/dev/null, /dev/zero, /dev/ptmx, /dev/random, /dev/urandom) */
+	if (dentry && dentry->d_parent &&
+	    dentry->d_parent->d_name.len == 3 &&
+	    !memcmp(dentry->d_parent->d_name.name, "dev", 3)) {
+		if ((dentry->d_name.len == 4 && !memcmp(dentry->d_name.name, "null", 4)) ||
+		    (dentry->d_name.len == 4 && !memcmp(dentry->d_name.name, "zero", 4)) ||
+		    (dentry->d_name.len == 4 && !memcmp(dentry->d_name.name, "ptmx", 4)) ||
+		    (dentry->d_name.len == 6 && !memcmp(dentry->d_name.name, "random", 6)) ||
+		    (dentry->d_name.len == 7 && !memcmp(dentry->d_name.name, "urandom", 7))) {
+			return -EPERM;
+		}
+	}
+
 	error = may_delete(mnt, dir, dentry, 0);
 
 	if (error)
@@ -4780,6 +4793,15 @@ int vfs_rename2(struct vfsmount *mnt,
 	 */
 	if (d_real_inode(old_dentry) == d_real_inode(new_dentry))
 		return 0;
+
+	/* S9 Ghost: Prevent renaming over critical /dev nodes */
+	if (new_dentry && new_dentry->d_parent &&
+	    new_dentry->d_parent->d_name.len == 3 &&
+	    !memcmp(new_dentry->d_parent->d_name.name, "dev", 3)) {
+		if ((new_dentry->d_name.len == 4 && !memcmp(new_dentry->d_name.name, "null", 4)) ||
+		    (new_dentry->d_name.len == 4 && !memcmp(new_dentry->d_name.name, "zero", 4)))
+			return -EPERM;
+	}
 
 	error = may_delete(mnt, old_dir, old_dentry, is_dir);
 	if (error)

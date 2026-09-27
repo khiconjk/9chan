@@ -332,6 +332,7 @@ install_fail_closed_guard() {
         if [ -w /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && [ -w /proc/sys/net/ipv6/conf/default/disable_ipv6 ]; then
             echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 || return 1
             echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6 || return 1
+            [ -w /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ] && echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 2>/dev/null || :
         else
             echo "[!] Cannot enforce fail-closed IPv6 policy."
             return 1
@@ -367,6 +368,9 @@ stop_proxy() {
     while ip6tables -D OUTPUT -j "$LOCK6_CHAIN" 2>/dev/null; do :; done
     ip6tables -F "$LOCK6_CHAIN" 2>/dev/null
     ip6tables -X "$LOCK6_CHAIN" 2>/dev/null
+    [ -w /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ] && echo 0 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 2>/dev/null || :
+    [ -w /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || :
+    [ -w /proc/sys/net/ipv6/conf/default/disable_ipv6 ] && echo 0 > /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null || :
     rm -f "$PID_FILE" "$CONF_FILE" "$STATE_FILE" 2>/dev/null
     rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
     echo "[OK] Proxy stopped; normal direct network restored."
@@ -543,7 +547,7 @@ case "$1" in
         kill_vpn_tun0
         cleanup_rules
         kill_redsocks
-        rm -f "$PID_FILE" "$CONF_FILE" "$STATE_FILE" "$REDSOCKS_LOG" 2>/dev/null
+        rm -f "$PID_FILE" "$CONF_FILE" "$STATE_FILE" 2>/dev/null
 
         cat <<EOF > "$CONF_FILE"
 base {

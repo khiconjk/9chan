@@ -740,6 +740,57 @@ static ssize_t s9_ghost_filter_dumpsys_batterystats(struct file *file, char __us
 		modified = true;
 	}
 
+	/* Harmonize dummy zero WCDMA cell in mCellInfo */
+	while ((p = strstr(kbuf, "mMcc=000 mMnc=000 mAlphaLong=000000 mAlphaShort=000000")) != NULL) {
+		static const char rep_zero_cell[] = "mMcc=452 mMnc=01 mAlphaLong=VN MOBIFONE mAlphaShort=VMS";
+		size_t old_len = 55;
+		size_t new_len = sizeof(rep_zero_cell) - 1;
+		if (cur_len - old_len + new_len <= min_t(size_t, buf_cap, alloc_cap)) {
+			memmove(p + new_len, p + old_len, (size_t)((kbuf + cur_len) - (p + old_len)) + 1);
+			memcpy(p, rep_zero_cell, new_len);
+			cur_len = cur_len - old_len + new_len;
+			modified = true;
+		} else {
+			break;
+		}
+	}
+	while ((p = strstr(kbuf, "mLac=0 mCid=0 mPsc=0 mUarfcn=0")) != NULL) {
+		static const char rep_lac_cid[] = "mLac=11395 mCid=22036785 mPsc=0 mUarfcn=10638";
+		size_t old_len = 30;
+		size_t new_len = sizeof(rep_lac_cid) - 1;
+		if (cur_len - old_len + new_len <= min_t(size_t, buf_cap, alloc_cap)) {
+			memmove(p + new_len, p + old_len, (size_t)((kbuf + cur_len) - (p + old_len)) + 1);
+			memcpy(p, rep_lac_cid, new_len);
+			cur_len = cur_len - old_len + new_len;
+			modified = true;
+		} else {
+			break;
+		}
+	}
+
+	/* Harmonize Viettel LTE records in dumpsys telephony.registry */
+	while ((p = strstr(kbuf, "mMcc=452 mMnc=04 mAlphaLong=VIETTEL mAlphaShort=VIETTEL")) != NULL) {
+		static const char rep_vtl[] = "mMcc=452 mMnc=01 mAlphaLong=MobiFone mAlphaShort=MOBIFONE";
+		size_t old_len = 55;
+		size_t new_len = sizeof(rep_vtl) - 1;
+		if (cur_len - old_len + new_len <= min_t(size_t, buf_cap, alloc_cap)) {
+			memmove(p + new_len, p + old_len, (size_t)((kbuf + cur_len) - (p + old_len)) + 1);
+			memcpy(p, rep_vtl, new_len);
+			cur_len = cur_len - old_len + new_len;
+			modified = true;
+		} else {
+			break;
+		}
+	}
+	while ((p = strstr(kbuf, "VIETTEL")) != NULL) {
+		memcpy(p, "MOBIFON", 7);
+		modified = true;
+	}
+	while ((p = strstr(kbuf, "Viettel")) != NULL) {
+		memcpy(p, "MobiFon", 7);
+		modified = true;
+	}
+
 	/* 9. Shift ISO-8601 YYYY-MM-DDTHH:MM:SS timestamps in dumpsys logs (e.g., telephony.registry) */
 	for (p = kbuf; p + 19 <= kbuf + cur_len; p++) {
 		if (p[0] == '2' && p[1] == '0' && p[2] == '2' &&

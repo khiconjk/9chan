@@ -26,6 +26,15 @@ sync_persistent_clock() {
 
 sync_persistent_clock
 
+# Self-heal /dev/null if corrupted or missing
+if [ ! -c /dev/null ]; then
+    rm -f /dev/null 2>/dev/null
+    mknod -m 666 /dev/null c 1 3
+    chown 0:0 /dev/null
+    chmod 0666 /dev/null
+    chcon u:object_r:null_device:s0 /dev/null 2>/dev/null || :
+fi
+
 provision_direct_boot_dirs() {
     # 1. Base User, Direct Boot & ART Profile parent directories (prevents PackageManagerService rollback of /data/user_de/0/*)
     mkdir -p /data/data /data/user/0 /data/system/users/0 /data/user_de/0 /data/system_de/0 /data/misc_de/0 /data/system_ce/0 /data/misc_ce/0 2>/dev/null
@@ -423,6 +432,33 @@ sanitize_packages_and_timezone() {
     [ -z "$CUR_TZ" ] && CUR_TZ="Asia/Ho_Chi_Minh"
     settings put system homecity_timezone "$CUR_TZ" 2>/dev/null
     rm -rf /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* /data/misc/bootstat/* 2>/dev/null
+    scatter_package_install_times
+}
+
+scatter_package_install_times() {
+    [ -f /data/system/packages.xml ] || return 0
+    grep -q 'it="1a18' /data/system/packages.xml 2>/dev/null || return 0
+    sed -i \
+        -e 's/it="1a18[0-9a-fA-F]*"/it="1a139fd4700"/g' \
+        -e 's/ut="1a18[0-9a-fA-F]*"/ut="1a139fd4700"/g' \
+        -e 's/ft="1a18[0-9a-fA-F]*"/ft="1a139fd4700"/g' \
+        /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.shopee.vn"/s/it="[^"]*"/it="1a138767280"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.shopee.vn"/s/ut="[^"]*"/ut="1a138767280"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.shopee.vn"/s/ft="[^"]*"/ft="1a138765000"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.ss.android.ugc.trill"/s/it="[^"]*"/it="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.ss.android.ugc.trill"/s/ut="[^"]*"/ut="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.ss.android.ugc.trill"/s/ft="[^"]*"/ft="1a139fd2500"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.zhiliaoapp.musically"/s/it="[^"]*"/it="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.zhiliaoapp.musically"/s/ut="[^"]*"/ut="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.zhiliaoapp.musically"/s/ft="[^"]*"/ft="1a139fd2500"/' /data/system/packages.xml 2>/dev/null
+    chown 1000:1000 /data/system/packages.xml 2>/dev/null
+    chmod 0600 /data/system/packages.xml 2>/dev/null
+    for apk_dir in /data/app/*; do
+        if [ -d "$apk_dir" ]; then
+            toybox touch -t 202609111400 "$apk_dir" "$apk_dir"/* 2>/dev/null || :
+        fi
+    done
 }
 
 # Retire the old arbitrary root-script handoff.

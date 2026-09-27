@@ -308,9 +308,9 @@ static void s9_ghost_harmonize_properties(void)
 		s9_ghost_set_prop("ril.product_code", prod_code);
 		s9_ghost_set_prop("vendor.ril.product_code", prod_code);
 
-		snprintf(omc_path, sizeof(omc_path), "/odm/omc/%s/conf", unified_csc);
-		snprintf(omc_etcpath, sizeof(omc_etcpath), "/odm/omc/%s/etc", unified_csc);
-		snprintf(omc_respath, sizeof(omc_respath), "/odm/omc/%s/res", unified_csc);
+		snprintf(omc_path, sizeof(omc_path), "/odm/etc/omc/%s/conf", unified_csc);
+		snprintf(omc_etcpath, sizeof(omc_etcpath), "/odm/etc/omc/%s/etc", unified_csc);
+		snprintf(omc_respath, sizeof(omc_respath), "/odm/etc/omc/%s/res", unified_csc);
 		s9_ghost_set_prop("persist.sys.omc_path", omc_path);
 		s9_ghost_set_prop("persist.sys.omc_etcpath", omc_etcpath);
 		s9_ghost_set_prop("persist.sys.omc_respath", omc_respath);
@@ -1400,6 +1400,7 @@ int s9_ghost_patch_properties(void)
 			s9_delete_prop_file_one(del_contexts[d_idx], "ro.boot.serialno2");
 			s9_delete_prop_file_one(del_contexts[d_idx], "ro.pchanger.android");
 			s9_delete_prop_file_one(del_contexts[d_idx], "ro.pchanger.Active");
+			s9_delete_prop_file_one(del_contexts[d_idx], "debug.fix_storage");
 			if (s9_allow_crypto_cloak) {
 				s9_delete_prop_file_one(del_contexts[d_idx], "debug.sf.nobootanimation");
 				s9_delete_prop_file_one(del_contexts[d_idx], "persist.sys.zygote.early");

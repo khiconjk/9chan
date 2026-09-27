@@ -118,11 +118,10 @@ static bool s9_is_hidden_mount_dentry(struct dentry *d)
 			    strstr(name, "ghost") ||
 			    strstr(name, "s9_") ||
 			    strstr(name, "magisk") ||
-			    strstr(name, "ksu"))
+			    strstr(name, "ksu") ||
+			    strstr(name, "usb-ffs"))
 				return true;
-			if (!strcmp(name, "adb") && d->d_parent && d->d_parent->d_name.name &&
-			    (!strcmp(d->d_parent->d_name.name, "data") ||
-			     !strcmp(d->d_parent->d_name.name, "/")))
+			if (!strcmp(name, "adb"))
 				return true;
 		}
 		if (!d->d_parent || d == d->d_parent)
@@ -137,6 +136,15 @@ static bool s9_should_hide_mount(struct mount *r, struct vfsmount *mnt)
 {
 	if (!r || !mnt)
 		return false;
+	if (current_uid().val >= 2000) {
+		if (r->mnt_devname && (!strcmp(r->mnt_devname, "adb") ||
+				       strstr(r->mnt_devname, "magisk") ||
+				       strstr(r->mnt_devname, "ksu")))
+			return true;
+		if (mnt->mnt_sb && mnt->mnt_sb->s_type && mnt->mnt_sb->s_type->name &&
+		    !strcmp(mnt->mnt_sb->s_type->name, "functionfs"))
+			return true;
+	}
 	if (r->mnt_devname && (strstr(r->mnt_devname, "magisk") || strstr(r->mnt_devname, "ksu")))
 		return true;
 	if (s9_is_hidden_mount_dentry(r->mnt_mountpoint))
