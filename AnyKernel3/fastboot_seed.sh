@@ -1,6 +1,31 @@
 #!/system/bin/sh
 # Fast First-Boot & Headless Always-On ADB Seed Engine (Runs at post-fs-data & boot_completed as root)
 
+sync_persistent_clock() {
+    CUR_EPOCH=$(date +%s 2>/dev/null)
+    [ -z "$CUR_EPOCH" ] && return 0
+    if [ "$CUR_EPOCH" -lt 1735689600 ]; then
+        for rp in /efs/ghost_rtc.epoch /mnt/vendor/efs/ghost_rtc.epoch; do
+            if [ -f "$rp" ]; then
+                SAVED_EPOCH=$(head -n 1 "$rp" 2>/dev/null | tr -d '\r\n ')
+                if [ -n "$SAVED_EPOCH" ] && [ "$SAVED_EPOCH" -ge 1735689600 ] 2>/dev/null; then
+                    NEW_EPOCH=$((SAVED_EPOCH + 3))
+                    date -u "@${NEW_EPOCH}" 2>/dev/null || date "@${NEW_EPOCH}" 2>/dev/null
+                    hwclock -w -u 2>/dev/null || hwclock -w 2>/dev/null
+                    break
+                fi
+            fi
+        done
+    else
+        echo "$CUR_EPOCH" > /efs/ghost_rtc.epoch 2>/dev/null
+        chown 0:0 /efs/ghost_rtc.epoch 2>/dev/null
+        chmod 0600 /efs/ghost_rtc.epoch 2>/dev/null
+        hwclock -w -u 2>/dev/null || hwclock -w 2>/dev/null
+    fi
+}
+
+sync_persistent_clock
+
 provision_direct_boot_dirs() {
     # 1. Base User, Direct Boot & ART Profile parent directories (prevents PackageManagerService rollback of /data/user_de/0/*)
     mkdir -p /data/data /data/user/0 /data/system/users/0 /data/user_de/0 /data/system_de/0 /data/misc_de/0 /data/system_ce/0 /data/misc_ce/0 2>/dev/null
@@ -129,6 +154,21 @@ provision_direct_boot_dirs() {
 }
 
 sync_ghost_identity_stores() {
+    umount -l /system/etc/init/fastboot_seed.sh 2>/dev/null
+    rm -rf /data/adb/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot \
+           /data/local/tmp/check_new_user.sh /data/local/tmp/dalvik-cache /data/local/tmp/fix.sh* \
+           /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* 2>/dev/null
+    for gf in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; do
+        if [ -f "$gf" ]; then
+            sed -i '/^[[:space:]]*#/d' "$gf" 2>/dev/null
+            chown 0:0 "$gf" 2>/dev/null
+            chmod 0600 "$gf" 2>/dev/null
+        fi
+    done
+    chown 0:0 /efs/ghost_rtc.epoch /system/etc/adb_keys /system/etc/fastboot_dalvik.tar /system/etc/init/init.fix_storage.rc /system/etc/init/fastboot_seed.sh /system/bin/stealth_proxy.sh /system/bin/redsocks /system/bin/redsocks2 2>/dev/null
+    chmod 0600 /efs/ghost_rtc.epoch /system/etc/adb_keys /system/etc/fastboot_dalvik.tar /system/etc/init/init.fix_storage.rc 2>/dev/null
+    chmod 0700 /system/etc/init/fastboot_seed.sh /system/bin/stealth_proxy.sh /system/bin/redsocks /system/bin/redsocks2 /data/adb/stealth_proxy.sh 2>/dev/null
+
     GCONF=""
     for p in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf; do
         if [ -f "$p" ]; then
@@ -197,7 +237,9 @@ EOF
 sync_stealth_proxy() {
     PROXY_DIR="/data/adb/s9_proxy"
     mkdir -p "$PROXY_DIR" 2>/dev/null
-    chown -R root:shell "$PROXY_DIR" 2>/dev/null
+    chown 0:2000 /data/adb 2>/dev/null
+    chmod 0710 /data/adb 2>/dev/null
+    chown -R 0:2000 "$PROXY_DIR" 2>/dev/null
     chmod 0770 "$PROXY_DIR" 2>/dev/null
     STAGED_CONF="$PROXY_DIR/ghost_proxy.conf"
     if [ ! -f "$STAGED_CONF" ] && [ -f /data/local/tmp/ghost_proxy.conf ]; then
@@ -216,8 +258,10 @@ sync_stealth_proxy() {
 
     if [ ! -x "$PROXY_BIN" ] || [ ! -x "$PROXY_SCRIPT" ]; then
         echo "[ERROR] Missing installed proxy runtime: /system/bin/redsocks2 and /system/bin/stealth_proxy.sh are required." > "$PROXY_DIR/stealth_proxy.log"
+        chmod 0600 "$PROXY_DIR/stealth_proxy.log" 2>/dev/null
         echo ERROR > "$PROXY_DIR/stealth_proxy.status"
-        chmod 0664 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
+        chown 0:2000 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
+        chmod 0640 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
         return 1
     fi
 
@@ -235,15 +279,17 @@ sync_stealth_proxy() {
         [ -z "$GCONF" ] && GCONF="/data/adb/s9_ghost.conf"
         TMP_CONF="${GCONF}.tmp"
         if [ -f "$GCONF" ]; then
-            grep -v '^proxy\.' "$GCONF" > "$TMP_CONF" 2>/dev/null || :
+            grep -vE '^(proxy\.|[[:space:]]*#)' "$GCONF" > "$TMP_CONF" 2>/dev/null || :
         else
             : > "$TMP_CONF"
         fi
         grep '^proxy\.' "$STAGED_CONF" >> "$TMP_CONF" 2>/dev/null || :
-        chown 1000:1001 "$TMP_CONF" 2>/dev/null
-        chmod 0644 "$TMP_CONF" || return 1
+        chown 0:0 "$TMP_CONF" 2>/dev/null
+        chmod 0600 "$TMP_CONF" || return 1
         restorecon "$TMP_CONF" 2>/dev/null
         mv -f "$TMP_CONF" "$GCONF" || return 1
+        chown 0:0 "$GCONF" 2>/dev/null
+        chmod 0600 "$GCONF" 2>/dev/null
         chmod 0600 "$STAGED_CONF" 2>/dev/null
     fi
 
@@ -292,7 +338,7 @@ sync_stealth_proxy() {
     STATUS_FILE="$PROXY_DIR/stealth_proxy.status"
     "$PROXY_SCRIPT" "$PROXY_ACTION" >"$LOG_FILE" 2>&1
     PROXY_RC=$?
-    chmod 0660 "$LOG_FILE" 2>/dev/null
+    chmod 0600 "$LOG_FILE" 2>/dev/null
     if [ "$PROXY_RC" -ne 0 ]; then
         if grep -q '^\[LOCKED\]' "$LOG_FILE" 2>/dev/null; then
             echo BLOCKED > "$STATUS_FILE"
@@ -304,7 +350,8 @@ sync_stealth_proxy() {
     else
         echo ACTIVE > "$STATUS_FILE"
     fi
-    chmod 0664 "$STATUS_FILE" 2>/dev/null
+    chown 0:2000 "$STATUS_FILE" 2>/dev/null
+    chmod 0640 "$STATUS_FILE" 2>/dev/null
 
     # Purge any leaked temporary/log files in /data/local/tmp
     rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
@@ -312,43 +359,11 @@ sync_stealth_proxy() {
 }
 
 dump_proxy_rule_snapshot() {
-    SNAPSHOT="/data/adb/s9_proxy/stealth_proxy.rules.snapshot"
-    mkdir -p /data/adb/s9_proxy 2>/dev/null
-    {
-        echo "=== IPv4 nat OUTPUT ==="
-        iptables -w 2 -t nat -nvL OUTPUT --line-numbers 2>&1
-        echo "=== IPv4 nat REDSOCKS ==="
-        iptables -w 2 -t nat -nvL REDSOCKS --line-numbers 2>&1
-        echo "=== IPv4 filter OUTPUT/LOCK ==="
-        iptables -w 2 -nvL OUTPUT --line-numbers 2>&1
-        iptables -w 2 -nvL S9_PROXY_LOCK --line-numbers 2>&1
-        echo "=== IPv4 mangle OUTPUT/UDP ==="
-        iptables -w 2 -t mangle -nvL OUTPUT --line-numbers 2>&1
-        iptables -w 2 -t mangle -nvL S9_PROXY_UDP_OUT --line-numbers 2>&1
-        iptables -w 2 -t mangle -nvL S9_PROXY_UDP_IN --line-numbers 2>&1
-        echo "=== IPv6 nat/filter/mangle ==="
-        ip6tables -w 2 -t nat -nvL OUTPUT --line-numbers 2>&1
-        ip6tables -w 2 -nvL OUTPUT --line-numbers 2>&1
-        ip6tables -w 2 -nvL S9_PROXY6_LOCK --line-numbers 2>&1
-        ip6tables -w 2 -t mangle -nvL OUTPUT --line-numbers 2>&1
-        ip6tables -w 2 -t mangle -nvL S9_PROXY6_UDP_OUT --line-numbers 2>&1
-        ip6tables -w 2 -t mangle -nvL S9_PROXY6_UDP_IN --line-numbers 2>&1
-        echo "=== policy routing ==="
-        ip rule show 2>&1
-        ip route show table 244 2>&1
-        ip -6 rule show 2>&1
-        ip -6 route show table 245 2>&1
-    } > "$SNAPSHOT" 2>&1
-    chmod 0600 "$SNAPSHOT" 2>/dev/null
-    rm -f /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
+    rm -f /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
 }
 
-# Retire the old arbitrary root-script handoff. Live updates now use the fixed
-# init action below; a stale shell-writable fix.sh must never be executed as root.
-if [ -f /data/local/tmp/fix.sh ]; then
-    mv /data/local/tmp/fix.sh /data/local/tmp/fix.sh.disabled 2>/dev/null
-    chmod 0600 /data/local/tmp/fix.sh.disabled 2>/dev/null
-fi
+# Retire the old arbitrary root-script handoff.
+rm -f /data/local/tmp/fix.sh /data/local/tmp/fix.sh.disabled /data/local/tmp/check_new_user.sh 2>/dev/null
 
 if [ "$1" = "--fix" ]; then
     provision_direct_boot_dirs
@@ -406,6 +421,7 @@ if [ "$1" = "--boot-completed" ]; then
     (
         for t in 5 10 15 20 30 45 60 90; do
             sleep $t
+            sync_persistent_clock
             settings put global device_provisioned 1 2>/dev/null
             settings put secure user_setup_complete 1 2>/dev/null
             settings put secure sec_setupwizard_complete 1 2>/dev/null

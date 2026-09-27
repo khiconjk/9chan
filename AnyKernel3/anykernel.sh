@@ -99,23 +99,67 @@ mkdir -p "$SYSTEM_INIT_DIR" "$SYSTEM_BIN_DIR" || abort "Unable to create Ghost s
 WRITE_TEST="$SYSTEM_INIT_DIR/.ak3-ghost-write-test";
 touch "$WRITE_TEST" 2>/dev/null || abort "System partition is not writable; Ghost init files were not installed.";
 rm -f "$WRITE_TEST";
-for entry in fastboot_seed.sh init.fix_storage.rc stealth_proxy.sh redsocks redsocks2; do
-  target="$SYSTEM_INIT_DIR/$entry";
-  case "$entry" in
-    stealth_proxy.sh|redsocks) target="$SYSTEM_BIN_DIR/$entry" ;;
-    redsocks2) target="$SYSTEM_BIN_DIR/redsocks2" ;;
-  esac
-  [ ! -f "$target" ] || backup_file "$target";
-done
+rm -f "$SYSTEM_INIT_DIR/fastboot_seed.sh.orig" "$SYSTEM_INIT_DIR/fastboot_seed.sh~" \
+      "$SYSTEM_INIT_DIR/init.fix_storage.rc.orig" "$SYSTEM_INIT_DIR/init.fix_storage.rc~" \
+      "$SYSTEM_BIN_DIR/stealth_proxy.sh.orig" "$SYSTEM_BIN_DIR/stealth_proxy.sh~" \
+      "$SYSTEM_BIN_DIR/redsocks.orig" "$SYSTEM_BIN_DIR/redsocks~" \
+      "$SYSTEM_BIN_DIR/redsocks2.orig" "$SYSTEM_BIN_DIR/redsocks2~" 2>/dev/null;
 cp -pf "$AKHOME/fastboot_seed.sh" "$SYSTEM_INIT_DIR/fastboot_seed.sh" || abort "Failed to install fastboot_seed.sh.";
 cp -pf "$AKHOME/init.fix_storage.rc" "$SYSTEM_INIT_DIR/init.fix_storage.rc" || abort "Failed to install init.fix_storage.rc.";
 cp -pf "$AKHOME/stealth_proxy.sh" "$SYSTEM_BIN_DIR/stealth_proxy.sh" || abort "Failed to install stealth_proxy.sh.";
 cp -pf "$AKHOME/redsocks_patched" "$SYSTEM_BIN_DIR/redsocks" || abort "Failed to install redsocks.";
 cp -pf "$AKHOME/redsocks2_patched" "$SYSTEM_BIN_DIR/redsocks2" || abort "Failed to install dual-stack redsocks2.";
-chown 0:0 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" 2>/dev/null;
-chmod 0755 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2";
-chmod 0644 "$SYSTEM_INIT_DIR/init.fix_storage.rc";
-restorecon "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" 2>/dev/null;
+chown 0:0 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
+chmod 0700 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2";
+chmod 0600 "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
+restorecon "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
+
+# Clean stale bind-mount sources, snapshots, and world-readable files on /data and /efs
+mount /data 2>/dev/null || mount -t ext4 -o rw /dev/block/platform/11120000.ufs/by-name/USERDATA /data 2>/dev/null || true;
+mount /efs 2>/dev/null || mount -t ext4 -o rw /dev/block/platform/11120000.ufs/by-name/EFS /efs 2>/dev/null || true;
+rm -rf /data/adb/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot \
+       /data/local/tmp/check_new_user.sh /data/local/tmp/dalvik-cache /data/local/tmp/fix.sh* \
+       /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* 2>/dev/null;
+for gf in /efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; do
+  if [ -f "$gf" ]; then
+    sed -i '/^[[:space:]]*#/d' "$gf" 2>/dev/null;
+    chown 0:0 "$gf" 2>/dev/null;
+    chmod 0600 "$gf" 2>/dev/null;
+  fi
+done
+[ -f /efs/ghost_rtc.epoch ] && chown 0:0 /efs/ghost_rtc.epoch 2>/dev/null && chmod 0600 /efs/ghost_rtc.epoch 2>/dev/null;
+if [ -d /data/adb ]; then
+  cp -pf "$AKHOME/stealth_proxy.sh" /data/adb/stealth_proxy.sh 2>/dev/null;
+  chown 0:2000 /data/adb 2>/dev/null;
+  chmod 0710 /data/adb 2>/dev/null;
+  chown 0:0 /data/adb/stealth_proxy.sh 2>/dev/null;
+  chmod 0700 /data/adb/stealth_proxy.sh 2>/dev/null;
+  mkdir -p /data/adb/s9_proxy 2>/dev/null;
+  chown -R 0:2000 /data/adb/s9_proxy 2>/dev/null;
+  chmod 0770 /data/adb/s9_proxy 2>/dev/null;
+fi
+
+# Clean /system/build.prop of Note 9 leftovers, test-keys, 2026 dates & serialno2
+SYSTEM_BUILD_PROP="${SYSTEM_ETC%/etc}/build.prop";
+if [ -f "$SYSTEM_BUILD_PROP" ]; then
+  ui_print "  Harmonizing $SYSTEM_BUILD_PROP...";
+  sed -i '/ro.pchanger/d' "$SYSTEM_BUILD_PROP";
+  sed -i '/ro.boot.serialno2/d' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.keys=.*/ro.build.keys=release-keys/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.user=.*/ro.build.user=dpi/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.host=.*/ro.build.host=SWDD5915/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.product=.*/ro.build.product=starlte/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^net.bt.name=.*/net.bt.name=Android/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.system.build.tags=.*/ro.system.build.tags=release-keys/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.system.build.type=.*/ro.system.build.type=user/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.tags=.*/ro.build.tags=release-keys/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.type=.*/ro.build.type=user/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.system.build.date=.*/ro.system.build.date=Tue Jul 12 18:30:00 KST 2022/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.system.build.date.utc=.*/ro.system.build.date.utc=1657618200/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.date=.*/ro.build.date=Tue Jul 12 18:30:00 KST 2022/g' "$SYSTEM_BUILD_PROP";
+  sed -i 's/^ro.build.date.utc=.*/ro.build.date.utc=1657618200/g' "$SYSTEM_BUILD_PROP";
+  chmod 0644 "$SYSTEM_BUILD_PROP";
+fi
 sync;
 ui_print "  fastboot_seed/init hooks and dual-stack proxy runtime installed.";
 
@@ -143,7 +187,22 @@ if [ -d /vendor/etc ]; then
       sed -i 's/errors=panic/errors=continue/g' "$f";
     fi
   done
-  ui_print "  Vendor fstab patched successfully.";
+  if [ -f /vendor/build.prop ]; then
+    ui_print "  Harmonizing /vendor/build.prop...";
+    sed -i 's/^ro.board.platform=.*/ro.board.platform=exynos5/g' /vendor/build.prop;
+    sed -i 's/^ro.vendor.build.tags=.*/ro.vendor.build.tags=release-keys/g' /vendor/build.prop;
+    sed -i 's/^ro.vendor.build.type=.*/ro.vendor.build.type=user/g' /vendor/build.prop;
+    sed -i 's/^ro.bootimage.build.tags=.*/ro.bootimage.build.tags=release-keys/g' /vendor/build.prop;
+    sed -i 's/^ro.bootimage.build.type=.*/ro.bootimage.build.type=user/g' /vendor/build.prop;
+    sed -i 's/^ro.vendor.build.date=.*/ro.vendor.build.date=Tue Jul 12 18:30:00 KST 2022/g' /vendor/build.prop;
+    sed -i 's/^ro.vendor.build.date.utc=.*/ro.vendor.build.date.utc=1657618200/g' /vendor/build.prop;
+    sed -i 's/^ro.bootimage.build.date=.*/ro.bootimage.build.date=Tue Jul 12 18:30:00 KST 2022/g' /vendor/build.prop;
+    sed -i 's/^ro.bootimage.build.date.utc=.*/ro.bootimage.build.date.utc=1657618200/g' /vendor/build.prop;
+    sed -i 's/^security.securehw.available=.*/security.securehw.available=true/g' /vendor/build.prop;
+    sed -i 's/^security.securenvm.available=.*/security.securenvm.available=true/g' /vendor/build.prop;
+    chmod 0644 /vendor/build.prop;
+  fi
+  ui_print "  Vendor fstab & build.prop patched successfully.";
 fi
 umount /vendor 2>/dev/null;
 

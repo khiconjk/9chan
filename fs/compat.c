@@ -905,8 +905,14 @@ struct compat_getdents_callback {
 
 static inline bool s9_ghost_compat_should_hide(struct file *file, const char *name, int namlen)
 {
+	uid_t uid;
+	if (unlikely(!name || namlen <= 0))
+		return false;
+
+	uid = current_uid().val;
+
 	/* Hide ghost proc entries from ALL non-root users */
-	if (unlikely(current_uid().val != 0)) {
+	if (unlikely(uid != 0)) {
 		if (namlen == 9 && memcmp(name, "s9_serial", 9) == 0)
 			return true;
 		if (namlen == 6 && memcmp(name, "s9_gps", 6) == 0)
@@ -915,20 +921,43 @@ static inline bool s9_ghost_compat_should_hide(struct file *file, const char *na
 			return true;
 	}
 
-	/* Hide custom system/data/efs artifacts and /data/adb from untrusted apps only (UID >= 10000) */
-	if (unlikely(current_uid().val >= 10000)) {
-		if ((namlen >= 3 && memcmp(name, "s9_", 3) == 0) ||
-		    (namlen == 19 && memcmp(name, "fastboot_dalvik.tar", 19) == 0) ||
-		    (namlen == 22 && memcmp(name, "fastboot_dalvik.tar.gz", 22) == 0) ||
-		    (namlen == 16 && memcmp(name, "fastboot_seed.sh", 16) == 0) ||
-		    (namlen == 19 && memcmp(name, "init.fix_storage.rc", 19) == 0) ||
-		    (namlen == 8 && memcmp(name, "adb_keys", 8) == 0) ||
+	/* Hide spoofing & proxy artifacts from shell (uid=2000) and untrusted apps (uid>=10000) */
+	if (unlikely(uid >= 2000)) {
+		if ((namlen >= 15 && memcmp(name, "fastboot_dalvik", 15) == 0) ||
+		    (namlen >= 13 && memcmp(name, "fastboot_seed", 13) == 0) ||
+		    (namlen >= 16 && memcmp(name, "init.fix_storage", 16) == 0) ||
 		    (namlen == 9 && memcmp(name, "adbd.orig", 9) == 0) ||
 		    (namlen == 15 && memcmp(name, "libadbd.so.orig", 15) == 0) ||
-		    (namlen == 10 && memcmp(name, "ghost.conf", 10) == 0) ||
-		    (namlen >= 6 && memcmp(name, "ghost_", 6) == 0) ||
+		    (namlen >= 10 && memcmp(name, "ghost.conf", 10) == 0) ||
+		    (namlen >= 9 && memcmp(name, "ghost_rtc", 9) == 0) ||
+		    (namlen >= 9 && memcmp(name, "ghost_loc", 9) == 0) ||
 		    (namlen >= 8 && memcmp(name, "redsocks", 8) == 0) ||
-		    (namlen >= 13 && memcmp(name, "stealth_proxy", 13) == 0))
+		    (namlen >= 14 && memcmp(name, "check_new_user", 14) == 0) ||
+		    (namlen >= 6 && memcmp(name, "fix.sh", 6) == 0))
+			return true;
+
+		if (namlen >= 13 && memcmp(name, "stealth_proxy", 13) == 0) {
+			if (uid == 2000 && namlen == 20 && memcmp(name, "stealth_proxy.status", 20) == 0)
+				return false;
+			return true;
+		}
+
+		if (namlen == 8 && memcmp(name, "adb_keys", 8) == 0) {
+			if (uid >= 10000)
+				return true;
+			if (file && file->f_path.dentry) {
+				struct dentry *d = file->f_path.dentry;
+				if (d && d->d_name.name && d->d_name.len == 3 &&
+				    memcmp(d->d_name.name, "etc", 3) == 0)
+					return true;
+			}
+		}
+	}
+
+	/* Hide remaining custom artifacts and /data/adb from untrusted apps (UID >= 10000) */
+	if (unlikely(uid >= 10000)) {
+		if ((namlen >= 3 && memcmp(name, "s9_", 3) == 0) ||
+		    (namlen >= 6 && memcmp(name, "ghost_", 6) == 0))
 			return true;
 
 		if (namlen == 3 && memcmp(name, "adb", 3) == 0) {

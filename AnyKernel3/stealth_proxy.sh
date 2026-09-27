@@ -10,13 +10,15 @@ umask 022
 CONF_DIR="/data/adb/s9_proxy"
 mkdir -p "$CONF_DIR" 2>/dev/null
 chmod 0770 "$CONF_DIR" 2>/dev/null
-chown root:shell "$CONF_DIR" 2>/dev/null
-chmod 0750 /data/adb 2>/dev/null
-chown root:shell /data/adb 2>/dev/null
+chown 0:2000 "$CONF_DIR" 2>/dev/null
+chmod 0710 /data/adb 2>/dev/null
+chown 0:2000 /data/adb 2>/dev/null
+umount -l /system/etc/init/fastboot_seed.sh 2>/dev/null
+rm -f /data/adb/fastboot_seed.sh /data/local/tmp/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot "$CONF_DIR/stealth_proxy.rules.snapshot" 2>/dev/null
 if [ -d /data/adb ] && [ "$0" != "/data/adb/stealth_proxy.sh" ]; then
     cp -pf "$0" /data/adb/stealth_proxy.sh 2>/dev/null
-    chmod 0755 /data/adb/stealth_proxy.sh 2>/dev/null
-    chown root:root /data/adb/stealth_proxy.sh 2>/dev/null
+    chmod 0700 /data/adb/stealth_proxy.sh 2>/dev/null
+    chown 0:0 /data/adb/stealth_proxy.sh 2>/dev/null
 fi
 CONF_FILE="$CONF_DIR/redsocks.conf"
 PID_FILE="$CONF_DIR/redsocks.pid"
@@ -493,7 +495,8 @@ case "$1" in
                 fi
                 echo STOPPED > "$STATUS_FILE"
             fi
-            chmod 0644 "$STATUS_FILE" 2>/dev/null
+            chown 0:2000 "$STATUS_FILE" 2>/dev/null
+            chmod 0640 "$STATUS_FILE" 2>/dev/null
             sleep 10
         done
         ;;
@@ -668,8 +671,10 @@ EOF
 
         PASS_SIG=$(printf '%s' "$PROXY_PASS" | cksum 2>/dev/null | cut -d' ' -f1)
         echo "${PROXY_TYPE}://${PROXY_USER}@${PROXY_IP}:${PROXY_PORT}:${PASS_SIG}" > "$STATE_FILE"
+        chmod 0600 "$STATE_FILE" 2>/dev/null
         echo ACTIVE > "$STATUS_FILE"
-        chmod 0644 "$STATUS_FILE" 2>/dev/null
+        chown 0:2000 "$STATUS_FILE" 2>/dev/null
+        chmod 0640 "$STATUS_FILE" 2>/dev/null
         echo "[OK] Stealth Transparent Proxy ACTIVE ($PROXY_TYPE://$PROXY_IP:$PROXY_PORT)"
         echo "     - TCP IPv4+IPv6: redirected to SOCKS5 through redsocks2"
         echo "     - UDP IPv4+IPv6: SOCKS5 ASSOCIATE via TPROXY"
@@ -679,7 +684,8 @@ EOF
     stop)
         stop_proxy
         echo STOPPED > "$STATUS_FILE"
-        chmod 0644 "$STATUS_FILE" 2>/dev/null
+        chown 0:2000 "$STATUS_FILE" 2>/dev/null
+        chmod 0640 "$STATUS_FILE" 2>/dev/null
         echo "[OK] Proxy stopped; normal direct network restored."
         ;;
 

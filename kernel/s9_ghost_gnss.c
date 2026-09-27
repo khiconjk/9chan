@@ -646,28 +646,17 @@ static void s9_ghost_gnss_worker(struct work_struct *work)
 }
 
 /*
- * /proc/s9_gps diagnostic & live control interface
+ * /proc/s9_gps live control interface (root write-only 0200, silent read)
  */
 static int s9_gps_proc_show(struct seq_file *m, void *v)
 {
-	seq_printf(m, "enabled=%d\n", s9_gnss_enabled);
-	seq_printf(m, "lat=%lld.%06lld\n", s9_gnss_lat_e6 / 1000000LL,
-		   (s9_gnss_lat_e6 < 0 ? -s9_gnss_lat_e6 : s9_gnss_lat_e6) % 1000000LL);
-	seq_printf(m, "lon=%lld.%06lld\n", s9_gnss_lon_e6 / 1000000LL,
-		   (s9_gnss_lon_e6 < 0 ? -s9_gnss_lon_e6 : s9_gnss_lon_e6) % 1000000LL);
-	seq_printf(m, "alt=%lld.%lld\n", s9_gnss_alt_e1 / 10LL,
-		   (s9_gnss_alt_e1 < 0 ? -s9_gnss_alt_e1 : s9_gnss_alt_e1) % 10LL);
-	seq_printf(m, "packets_sent=%llu\n", s9_gnss_packets_sent);
-	seq_printf(m, "last_errno=%d\n", s9_gnss_last_errno);
-	seq_printf(m, "satellites=18 (10 GPS, 4 GLONASS, 4 BeiDou)\n");
-	seq_printf(m, "stealth_status=100%% Hardware Native (Mock bit=0, Feniks Safe)\n");
 	return 0;
 }
 
 static int s9_gps_proc_open(struct inode *inode, struct file *file)
 {
 	kuid_t uid = current_uid();
-	if (uid.val != 0 && uid.val != 2000)
+	if (uid.val != 0)
 		return -ENOENT;
 	return single_open(file, s9_gps_proc_show, NULL);
 }
@@ -680,7 +669,7 @@ static ssize_t s9_gps_proc_write(struct file *file, const char __user *buffer,
 	char *comma;
 	kuid_t uid = current_uid();
 
-	if (uid.val != 0 && uid.val != 2000)
+	if (uid.val != 0)
 		return -ENOENT;
 
 	if (copy_from_user(kcmd, buffer, len))
@@ -689,7 +678,7 @@ static ssize_t s9_gps_proc_write(struct file *file, const char __user *buffer,
 
 	if (strstr(kcmd, "enable=1") || strstr(kcmd, "enabled=1")) {
 		s9_ghost_gnss_set_enabled(1);
-	} else if (strstr(kcmd, "enable=0") || strstr(kcmd, "enabled=0")) {
+	} else if (strstr(kcmd, "enable=0") || strstr(kcmd, "enabled=0") || strstr(kcmd, "disable")) {
 		s9_ghost_gnss_set_enabled(0);
 	}
 
@@ -714,10 +703,9 @@ static const struct file_operations s9_gps_proc_fops = {
 
 static int __init s9_ghost_gnss_init(void)
 {
-	proc_create("s9_gps", 0666, NULL, &s9_gps_proc_fops);
+	proc_create("s9_gps", 0200, NULL, &s9_gps_proc_fops);
 	INIT_DELAYED_WORK(&s9_gnss_work, s9_ghost_gnss_worker);
 	schedule_delayed_work(&s9_gnss_work, msecs_to_jiffies(4000));
-	pr_info("[S9_GHOST_GNSS]: Broadcom GNSS Hardware Driver Virtualizer active\n");
 	return 0;
 }
 late_initcall(s9_ghost_gnss_init);

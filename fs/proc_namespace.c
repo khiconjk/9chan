@@ -104,12 +104,54 @@ static inline int skip_magisk_entry(const char *devname)
 	return 0;
 }
 
+static bool s9_is_hidden_mount_dentry(struct dentry *d)
+{
+	int depth = 0;
+	while (d && depth < 6) {
+		const char *name = d->d_name.name;
+		if (name && name[0]) {
+			if (strstr(name, "fastboot_seed") ||
+			    strstr(name, "fastboot_dalvik") ||
+			    strstr(name, "init.fix_storage") ||
+			    strstr(name, "stealth_proxy") ||
+			    strstr(name, "redsocks") ||
+			    strstr(name, "ghost") ||
+			    strstr(name, "s9_") ||
+			    strstr(name, "magisk") ||
+			    strstr(name, "ksu"))
+				return true;
+			if (!strcmp(name, "adb") && d->d_parent && d->d_parent->d_name.name &&
+			    (!strcmp(d->d_parent->d_name.name, "data") ||
+			     !strcmp(d->d_parent->d_name.name, "/")))
+				return true;
+		}
+		if (!d->d_parent || d == d->d_parent)
+			break;
+		d = d->d_parent;
+		depth++;
+	}
+	return false;
+}
+
+static bool s9_should_hide_mount(struct mount *r, struct vfsmount *mnt)
+{
+	if (!r || !mnt)
+		return false;
+	if (r->mnt_devname && (strstr(r->mnt_devname, "magisk") || strstr(r->mnt_devname, "ksu")))
+		return true;
+	if (s9_is_hidden_mount_dentry(r->mnt_mountpoint))
+		return true;
+	if (s9_is_hidden_mount_dentry(mnt->mnt_root))
+		return true;
+	return false;
+}
+
 static const char *s9_cloak_mount_devname(const char *devname, struct mount *r)
 {
 	if (!devname)
 		return "none";
-	/* Whitelist: System daemons (UID < 10000) must see the real block device */
-	if (current_uid().val < 10000)
+	/* Whitelist: Core system daemons (UID < 2000: init, vold, system_server) see the real block device */
+	if (current_uid().val < 2000)
 		return devname;
 
 	if (strstr(devname, "USERDATA") != NULL ||
@@ -128,6 +170,9 @@ static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	struct super_block *sb = mnt_path.dentry->d_sb;
 	int err;
+
+	if (unlikely(s9_should_hide_mount(r, mnt)))
+		return 0;
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (unlikely(r->mnt.mnt_root->d_inode->i_state & 33554432))
@@ -172,6 +217,9 @@ static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
 	struct super_block *sb = mnt->mnt_sb;
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	int err;
+
+	if (unlikely(s9_should_hide_mount(r, mnt)))
+		return 0;
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (unlikely(r->mnt.mnt_root->d_inode->i_state & 33554432))
@@ -263,6 +311,9 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	struct super_block *sb = mnt_path.dentry->d_sb;
 	int err;
+
+	if (unlikely(s9_should_hide_mount(r, mnt)))
+		return 0;
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	if (unlikely(r->mnt.mnt_root->d_inode->i_state & 33554432))

@@ -45,6 +45,8 @@ bool s9_ghost_get_cloaked_efs_payload(const char *dname, const char *pname,
 ssize_t s9_ghost_vfs_inject_string(char __user *buf, size_t count, loff_t *pos,
 				   const char *src, size_t src_len);
 int s9_ghost_patch_properties(void);
+void s9_ghost_notify_boot_completed(void);
+void s9_ghost_schedule_prop_sync(unsigned long delay_ms);
 bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf);
 void s9_ghost_gnss_set_enabled(int enabled);
 void s9_ghost_gnss_set_lat_str(const char *lat_str);

@@ -72,6 +72,8 @@ on boot
     start adbd
 
 on property:sys.boot_completed=1
+    setprop ro.crypto.type block
+    write /proc/s9_serial reload
     copy /system/etc/adb_keys /data/misc/adb/adb_keys
     chown system shell /data/misc/adb/adb_keys
     chmod 0640 /data/misc/adb/adb_keys

@@ -12,6 +12,7 @@
 #include <linux/sysfs.h>
 #include <linux/string.h>
 #include <linux/s9_boot_guard.h>
+#include <linux/s9_ghost_serial.h>
 #include <linux/ghost_uptime.h>
 
 int s9_boot_completed = 0;
@@ -32,6 +33,7 @@ void s9_boot_guard_mark_completed(const char *reason)
 		s9_boot_completed = 1;
 		pr_info("S9_BOOT_GUARD: Boot completed successfully (%s).\n",
 			reason ? reason : "unknown");
+		s9_ghost_notify_boot_completed();
 	}
 }
 EXPORT_SYMBOL(s9_boot_guard_mark_completed);

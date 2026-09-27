@@ -893,8 +893,17 @@ static int s2m_rtc_init_reg(struct s2m_rtc_info *info,
 	}
 
 	/* If the value of RTC_CTRL register is 0, RTC registers were reset */
-	if ((ctrl_val & MODEL24_MASK) && ((capsel_val & 0xf0) == 0xf0))
-		return 0;
+	if (ctrl_val & MODEL24_MASK) {
+		u8 year_val = 0;
+		if ((capsel_val & 0xf0) == 0xf0)
+			return 0;
+		if (s2mps18_read_reg(info->i2c, S2MP_RTC_REG_YEAR, &year_val) == 0 &&
+		    (year_val & 0x7f) >= 25) {
+			capsel_val |= 0xf0;
+			s2mps18_write_reg(info->i2c, S2MP_RTC_REG_CAPSEL, capsel_val);
+			return 0;
+		}
+	}
 
 #ifdef CONFIG_SEC_PM
 	is_rtc_cleared = true;

@@ -1872,40 +1872,76 @@ static inline int should_follow_link(struct nameidata *nd, struct path *link,
 
 enum {WALK_GET = 1, WALK_PUT = 2};
 
-static inline bool s9_is_ghost_hidden_filename(const char *name, int len)
+static inline bool s9_is_ghost_hidden_filename_for_uid(const char *name, int len,
+						       const struct dentry *parent, uid_t uid)
 {
-	if (!name || len <= 0)
+	if (!name || len <= 0 || uid < 2000)
 		return false;
-	if ((len >= 3 && memcmp(name, "s9_", 3) == 0) ||
-	    (len == 19 && memcmp(name, "fastboot_dalvik.tar", 19) == 0) ||
-	    (len == 22 && memcmp(name, "fastboot_dalvik.tar.gz", 22) == 0) ||
-	    (len == 16 && memcmp(name, "fastboot_seed.sh", 16) == 0) ||
-	    (len == 19 && memcmp(name, "init.fix_storage.rc", 19) == 0) ||
-	    (len == 8 && memcmp(name, "adb_keys", 8) == 0) ||
+
+	/* Hidden from all UID >= 2000 (both adb shell 2000 and apps >= 10000) */
+	if ((len == 9 && memcmp(name, "s9_serial", 9) == 0) ||
+	    (len == 6 && memcmp(name, "s9_gps", 6) == 0) ||
+	    (len == 11 && memcmp(name, "s9_headless", 11) == 0) ||
+	    (len >= 15 && memcmp(name, "fastboot_dalvik", 15) == 0) ||
+	    (len >= 13 && memcmp(name, "fastboot_seed", 13) == 0) ||
+	    (len >= 16 && memcmp(name, "init.fix_storage", 16) == 0) ||
 	    (len == 9 && memcmp(name, "adbd.orig", 9) == 0) ||
 	    (len == 15 && memcmp(name, "libadbd.so.orig", 15) == 0) ||
-	    (len == 10 && memcmp(name, "ghost.conf", 10) == 0) ||
-	    (len >= 6 && memcmp(name, "ghost_", 6) == 0) ||
+	    (len >= 10 && memcmp(name, "ghost.conf", 10) == 0) ||
+	    (len >= 9 && memcmp(name, "ghost_rtc", 9) == 0) ||
+	    (len >= 9 && memcmp(name, "ghost_loc", 9) == 0) ||
 	    (len >= 8 && memcmp(name, "redsocks", 8) == 0) ||
-	    (len >= 13 && memcmp(name, "stealth_proxy", 13) == 0))
+	    (len >= 14 && memcmp(name, "check_new_user", 14) == 0) ||
+	    (len >= 6 && memcmp(name, "fix.sh", 6) == 0))
 		return true;
+
+	if (len >= 13 && memcmp(name, "stealth_proxy", 13) == 0) {
+		if (uid == 2000 && len == 20 && memcmp(name, "stealth_proxy.status", 20) == 0)
+			return false;
+		return true;
+	}
+
+	if (len >= 8 && memcmp(name, "adb_keys", 8) == 0) {
+		if (uid >= 10000)
+			return true;
+		/* Hide /system/etc/adb_keys from uid 2000 while keeping /data/misc/adb/adb_keys for adbd */
+		if (parent && parent->d_name.len == 3 && memcmp(parent->d_name.name, "etc", 3) == 0)
+			return true;
+	}
+
+	/* Additional patterns hidden strictly from untrusted apps (UID >= 10000) */
+	if (uid >= 10000) {
+		if ((len >= 3 && memcmp(name, "s9_", 3) == 0) ||
+		    (len >= 6 && memcmp(name, "ghost_", 6) == 0))
+			return true;
+	}
+
 	return false;
 }
 
 static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
 {
 	struct dentry *cur = dentry;
-	if (cur && s9_is_ghost_hidden_filename(cur->d_name.name, cur->d_name.len))
+	uid_t uid = current_uid().val;
+
+	if (uid < 2000 || !cur)
+		return false;
+
+	if (s9_is_ghost_hidden_filename_for_uid(cur->d_name.name, cur->d_name.len,
+						cur->d_parent, uid))
 		return true;
-	while (cur && cur->d_parent && cur != cur->d_parent) {
-		struct dentry *p = cur->d_parent;
-		if (cur->d_name.len == 3 && memcmp(cur->d_name.name, "adb", 3) == 0) {
-			if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||
-			    (p->d_name.len == 4 && memcmp(p->d_name.name, "data", 4) == 0) ||
-			    (p->d_inode && p->d_inode->i_ino == 2))
-				return true;
+
+	if (uid >= 10000) {
+		while (cur && cur->d_parent && cur != cur->d_parent) {
+			struct dentry *p = cur->d_parent;
+			if (cur->d_name.len == 3 && memcmp(cur->d_name.name, "adb", 3) == 0) {
+				if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||
+				    (p->d_name.len == 4 && memcmp(p->d_name.name, "data", 4) == 0) ||
+				    (p->d_inode && p->d_inode->i_ino == 2))
+					return true;
+			}
+			cur = p;
 		}
-		cur = p;
 	}
 	return false;
 }
@@ -1913,10 +1949,11 @@ static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
 static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
 {
 	uid_t uid = current_uid().val;
-	if (unlikely(uid >= 10000) && (!nd->name || nd->name->uptr != NULL)) {
-		if (s9_is_ghost_hidden_filename(nd->last.name, nd->last.len))
+	if (unlikely(uid >= 2000) && (!nd->name || nd->name->uptr != NULL)) {
+		if (s9_is_ghost_hidden_filename_for_uid(nd->last.name, nd->last.len,
+							nd->path.dentry, uid))
 			return true;
-		if (nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
+		if (uid >= 10000 && nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
 			struct dentry *p = nd->path.dentry;
 			if (p) {
 				if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||
@@ -2521,8 +2558,8 @@ static int filename_lookup(int dfd, struct filename *name, unsigned flags,
 		return -ENOENT;
 	}
 #endif
-	/* S9 Ghost: Block /data/adb for untrusted apps (UID >= 10000) */
-	if (!retval && path->dentry && unlikely(current_uid().val >= 10000)) {
+	/* S9 Ghost: Block hidden artifacts for non-system users (UID >= 2000) */
+	if (!retval && path->dentry && unlikely(current_uid().val >= 2000)) {
 		if (s9_is_hidden_adb_dentry(path->dentry)) {
 			path_put(path);
 			putname(name);
@@ -3403,8 +3440,8 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 			return -ENOENT;
 		}
 #endif
-		/* S9 Ghost: Block cached /data/adb dentry for untrusted apps */
-		if (unlikely(current_uid().val >= 10000 && (!nd->name || nd->name->uptr != NULL) && s9_is_hidden_adb_dentry(dentry))) {
+		/* S9 Ghost: Block cached hidden dentry for non-system users (UID >= 2000) */
+		if (unlikely(current_uid().val >= 2000 && (!nd->name || nd->name->uptr != NULL) && s9_is_hidden_adb_dentry(dentry))) {
 			dput(dentry);
 			return -ENOENT;
 		}

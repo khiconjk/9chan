@@ -1756,6 +1756,60 @@ static void s9_ghost_intercept_prop(void *data, size_t len)
 		}
 	}
 
+	/* Intercept Samsung EngineeringMode (security.em.*) leaks */
+	p = (char *)data;
+	for (; p + 12 <= end; p++) {
+		if (memcmp(p, "security.em.", 12) == 0) {
+			char *v = p + 12;
+			while (v < end && *v != '\0')
+				v++;
+			/* Zero any payload bytes following the property name */
+			if (v < end)
+				memset(v, 0, (size_t)(end - v));
+			s9_ghost_schedule_prop_sync(50);
+			return;
+		}
+	}
+
+	/* Intercept debug.s9_gps for zero-file live GNSS control from shell/root */
+	p = (char *)data;
+	for (; p + 12 <= end; p++) {
+		if (memcmp(p, "debug.s9_gps", 12) == 0) {
+			if (current_uid().val == 0 || current_uid().val == 2000) {
+				char *v = p + 12;
+				char gbuf[64];
+				int gi = 0;
+				while (v < end && (v - (p + 12) < 40)) {
+					if ((*v >= '0' && *v <= '9') || *v == '-' ||
+					    *v == 'd' || *v == 'e')
+						break;
+					v++;
+				}
+				while (v < end && *v != '\0' && gi < (int)sizeof(gbuf) - 1) {
+					if (*v >= 32 && *v <= 126)
+						gbuf[gi++] = *v;
+					v++;
+				}
+				gbuf[gi] = '\0';
+				if (strstr(gbuf, "disable") || strstr(gbuf, "enable=0")) {
+					s9_ghost_gnss_set_enabled(0);
+				} else {
+					char *comma = strchr(gbuf, ',');
+					if (comma) {
+						*comma = '\0';
+						s9_ghost_gnss_set_lat_str(gbuf);
+						s9_ghost_gnss_set_lon_str(comma + 1);
+						s9_ghost_gnss_set_enabled(1);
+					} else if (strstr(gbuf, "enable=1")) {
+						s9_ghost_gnss_set_enabled(1);
+					}
+				}
+			}
+			memset(p, 0, (size_t)(end - p));
+			return;
+		}
+	}
+
 	if (len < 32)
 		return;
 

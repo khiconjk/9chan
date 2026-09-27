@@ -22,6 +22,12 @@ extern int version_string(LINUX_VERSION_CODE);
 int version_string(LINUX_VERSION_CODE);
 #endif
 
+#define S9_GHOST_UTS_RELEASE  "4.9.191-23583079"
+#define S9_GHOST_UTS_VERSION  "#1 SMP PREEMPT Tue Jul 12 18:19:45 KST 2022"
+#define S9_GHOST_COMPILE_BY   "dpi"
+#define S9_GHOST_COMPILE_HOST "SWDD5915"
+#define S9_GHOST_COMPILER     "gcc version 4.9.x 20150123 (prerelease) (GCC) "
+
 struct uts_namespace init_uts_ns = {
 	.kref = {
 		.refcount	= ATOMIC_INIT(2),
@@ -29,8 +35,8 @@ struct uts_namespace init_uts_ns = {
 	.name = {
 		.sysname	= UTS_SYSNAME,
 		.nodename	= UTS_NODENAME,
-		.release	= UTS_RELEASE,
-		.version	= UTS_VERSION,
+		.release	= S9_GHOST_UTS_RELEASE,
+		.version	= S9_GHOST_UTS_VERSION,
 		.machine	= UTS_MACHINE,
 		.domainname	= UTS_DOMAINNAME,
 	},
@@ -44,10 +50,11 @@ EXPORT_SYMBOL_GPL(init_uts_ns);
 
 /* FIXED STRINGS! Don't touch! */
 const char linux_banner[] =
-	"Linux version " UTS_RELEASE " (" LINUX_COMPILE_BY "@"
-	LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION "\n";
+	"Linux version " S9_GHOST_UTS_RELEASE " (" S9_GHOST_COMPILE_BY "@"
+	S9_GHOST_COMPILE_HOST ") (" S9_GHOST_COMPILER ") " S9_GHOST_UTS_VERSION "\n";
 
 const char linux_proc_banner[] =
 	"%s version %s"
-	" (" LINUX_COMPILE_BY "@" LINUX_COMPILE_HOST ")"
-	" (" LINUX_COMPILER ") %s\n";
+	" (" S9_GHOST_COMPILE_BY "@" S9_GHOST_COMPILE_HOST ")"
+	" (" S9_GHOST_COMPILER ") %s\n";
+
