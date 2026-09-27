@@ -153,11 +153,41 @@ provision_direct_boot_dirs() {
     restorecon /data/misc_ce /data/misc_ce/0 /data/misc_de /data/misc_de/0 || return 1
 }
 
+echo $$ > /acct/cgroup.procs 2>/dev/null
+echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+
 sync_ghost_identity_stores() {
     umount -l /system/etc/init/fastboot_seed.sh 2>/dev/null
     rm -rf /data/adb/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot \
            /data/local/tmp/check_new_user.sh /data/local/tmp/dalvik-cache /data/local/tmp/fix.sh* \
-           /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* 2>/dev/null
+           /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* \
+           /data/misc/bootstat/* /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* 2>/dev/null
+
+    # Clean any legacy /system/etc/proc or /system/etc/serial files and reset timestamps if present
+    if [ -e /system/etc/proc ] || [ -e /system/etc/serial ] || [ -e /system/Utils ]; then
+        mount -o remount,rw / 2>/dev/null || mount -o remount,rw /system 2>/dev/null
+        rm -rf /system/etc/proc /system/etc/serial /system/Utils 2>/dev/null
+        [ -f /system/etc/init/vdc.rc ] && sed -i 's/ (neutralized by Ghost)//g' /system/etc/init/vdc.rc 2>/dev/null
+        [ -f /system/etc/fstab.samsungexynos9810 ] && sed -i 's/fstab\.star2lte/fstab.starlte/g' /system/etc/fstab.samsungexynos9810 2>/dev/null
+        if [ -f /system/bin/sh ]; then
+            touch -r /system/bin/sh /system/etc/init/vdc.rc /system/etc/fstab.samsungexynos9810 /system/bin/vdc /system/bin/vold /system/bin/adbd /system/build.prop /system/etc/init /system/etc /system/bin 2>/dev/null
+        fi
+        mount -o remount,ro / 2>/dev/null || mount -o remount,ro /system 2>/dev/null
+    fi
+
+    # Fix missing installer="com.android.vending" in /data/system/packages.xml before PackageManager starts
+    if [ -f /data/system/packages.xml ]; then
+        for upkg in com.ss.android.ugc.trill com.zhiliaoapp.musically com.shopee.vn; do
+            if grep -q "<package name=\"$upkg\"" /data/system/packages.xml 2>/dev/null; then
+                if ! grep "<package name=\"$upkg\"" /data/system/packages.xml | grep -q 'installer='; then
+                    sed -i "s|<package name=\"$upkg\"|<package name=\"$upkg\" installer=\"com.android.vending\"|g" /data/system/packages.xml 2>/dev/null
+                fi
+            fi
+        done
+        chown 1000:1000 /data/system/packages.xml 2>/dev/null
+        chmod 0660 /data/system/packages.xml 2>/dev/null
+    fi
+
     for gf in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; do
         if [ -f "$gf" ]; then
             sed -i '/^[[:space:]]*#/d' "$gf" 2>/dev/null
@@ -216,11 +246,11 @@ EOF
         chmod 0600 /data/system/users/0/settings_ssaid.xml 2>/dev/null
     fi
 
-    # 2. Provision gservices.db (GSF 64-bit ID) if sqlite3 is available
-    if [ -n "$G_GSF" ] && [ -x /system/xbin/sqlite3 -o -x /system/bin/sqlite3 ]; then
+    # 2. Provision gservices.db (GSF 64-bit ID) and clean Accounts History Debug_table if sqlite3 is available
+    if [ -x /system/xbin/sqlite3 -o -x /system/bin/sqlite3 ]; then
         SQLITE_BIN="/system/xbin/sqlite3"
         [ ! -x "$SQLITE_BIN" ] && SQLITE_BIN="/system/bin/sqlite3"
-        if [ -d /data/data/com.google.android.gsf ]; then
+        if [ -n "$G_GSF" ] && [ -d /data/data/com.google.android.gsf ]; then
             GSF_UID=$(stat -c "%u" /data/data/com.google.android.gsf 2>/dev/null)
             mkdir -p /data/data/com.google.android.gsf/databases 2>/dev/null
             "$SQLITE_BIN" /data/data/com.google.android.gsf/databases/gservices.db "CREATE TABLE IF NOT EXISTS main (name TEXT PRIMARY KEY, value TEXT); CREATE TABLE IF NOT EXISTS overrides (name TEXT PRIMARY KEY, value TEXT); INSERT OR REPLACE INTO main (name, value) VALUES ('android_id', '${G_GSF}'); INSERT OR REPLACE INTO overrides (name, value) VALUES ('android_id', '${G_GSF}');" 2>/dev/null
@@ -230,6 +260,11 @@ EOF
                 chmod 0660 /data/data/com.google.android.gsf/databases/gservices.db* 2>/dev/null
             fi
         fi
+        for adb_file in /data/system_ce/0/accounts_ce.db /data/system_de/0/accounts_de.db; do
+            if [ -f "$adb_file" ]; then
+                "$SQLITE_BIN" "$adb_file" "DELETE FROM Debug_table;" 2>/dev/null
+            fi
+        done
     fi
 
 }
@@ -237,12 +272,14 @@ EOF
 sync_stealth_proxy() {
     PROXY_DIR="/data/adb/s9_proxy"
     mkdir -p "$PROXY_DIR" 2>/dev/null
-    chown 0:2000 /data/adb 2>/dev/null
-    chmod 0710 /data/adb 2>/dev/null
-    chown -R 0:2000 "$PROXY_DIR" 2>/dev/null
-    chmod 0770 "$PROXY_DIR" 2>/dev/null
+    chown 0:0 /data/adb 2>/dev/null
+    chmod 0700 /data/adb 2>/dev/null
+    chown -R 0:0 "$PROXY_DIR" 2>/dev/null
+    chmod 0700 "$PROXY_DIR" 2>/dev/null
     STAGED_CONF="$PROXY_DIR/ghost_proxy.conf"
-    if [ ! -f "$STAGED_CONF" ] && [ -f /data/local/tmp/ghost_proxy.conf ]; then
+    if [ -f /data/local/tmp/.sp_stage ]; then
+        mv -f /data/local/tmp/.sp_stage "$STAGED_CONF" 2>/dev/null
+    elif [ ! -f "$STAGED_CONF" ] && [ -f /data/local/tmp/ghost_proxy.conf ]; then
         mv -f /data/local/tmp/ghost_proxy.conf "$STAGED_CONF" 2>/dev/null
     fi
     PROXY_BIN="/system/bin/redsocks2"
@@ -260,8 +297,13 @@ sync_stealth_proxy() {
         echo "[ERROR] Missing installed proxy runtime: /system/bin/redsocks2 and /system/bin/stealth_proxy.sh are required." > "$PROXY_DIR/stealth_proxy.log"
         chmod 0600 "$PROXY_DIR/stealth_proxy.log" 2>/dev/null
         echo ERROR > "$PROXY_DIR/stealth_proxy.status"
-        chown 0:2000 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
-        chmod 0640 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
+        chown 0:0 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
+        chmod 0600 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
+        if [ -f /data/local/tmp/.sp_wait ]; then
+            echo ERROR > /data/local/tmp/.sp_res 2>/dev/null
+            chmod 0644 /data/local/tmp/.sp_res 2>/dev/null
+            rm -f /data/local/tmp/.sp_wait 2>/dev/null
+        fi
         return 1
     fi
 
@@ -350,8 +392,13 @@ sync_stealth_proxy() {
     else
         echo ACTIVE > "$STATUS_FILE"
     fi
-    chown 0:2000 "$STATUS_FILE" 2>/dev/null
-    chmod 0640 "$STATUS_FILE" 2>/dev/null
+    chown 0:0 "$STATUS_FILE" 2>/dev/null
+    chmod 0600 "$STATUS_FILE" 2>/dev/null
+    if [ -f /data/local/tmp/.sp_wait ]; then
+        cp -pf "$STATUS_FILE" /data/local/tmp/.sp_res 2>/dev/null
+        chmod 0644 /data/local/tmp/.sp_res 2>/dev/null
+        rm -f /data/local/tmp/.sp_wait 2>/dev/null
+    fi
 
     # Purge any leaked temporary/log files in /data/local/tmp
     rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
@@ -360,6 +407,22 @@ sync_stealth_proxy() {
 
 dump_proxy_rule_snapshot() {
     rm -f /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
+}
+
+sanitize_packages_and_timezone() {
+    # 1. Remove Key Attestation test app if present
+    if pm list packages 2>/dev/null | grep -q 'io.github.vvb2060.keyattestation'; then
+        pm uninstall io.github.vvb2060.keyattestation >/dev/null 2>&1
+    fi
+    # 2. Ensure all user-installed packages report Google Play Store as installer
+    for pkg in $(pm list packages -3 -i 2>/dev/null | grep 'installer=null' | sed 's/^package://; s/ .*//'); do
+        [ -n "$pkg" ] && pm set-installer "$pkg" com.android.vending >/dev/null 2>&1
+    done
+    # 3. Synchronize homecity_timezone with persist.sys.timezone
+    CUR_TZ=$(getprop persist.sys.timezone 2>/dev/null)
+    [ -z "$CUR_TZ" ] && CUR_TZ="Asia/Ho_Chi_Minh"
+    settings put system homecity_timezone "$CUR_TZ" 2>/dev/null
+    rm -rf /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* /data/misc/bootstat/* 2>/dev/null
 }
 
 # Retire the old arbitrary root-script handoff.
@@ -400,6 +463,7 @@ if [ "$1" = "--boot-completed" ]; then
     echo 512 > /sys/block/sda/queue/read_ahead_kb 2>/dev/null
     echo reload > /proc/s9_serial 2>/dev/null
     sync_ghost_identity_stores
+    sanitize_packages_and_timezone
     sync_stealth_proxy
     dump_proxy_rule_snapshot
     G_AID=$(grep -E '^android_id=' /efs/ghost.conf 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
@@ -407,21 +471,28 @@ if [ "$1" = "--boot-completed" ]; then
         settings put secure android_id "$G_AID" 2>/dev/null
     fi
     
-    # Launch background Stealth Proxy guardian daemon (eliminates tun0/VPN & syncs redsocks)
+    # Launch background Stealth Proxy guardian daemon detached from init service cgroup
     for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
         if [ -x "$sp" ] || [ -f "$sp" ]; then
             if ! pgrep -f "stealth_proxy.sh daemon" >/dev/null 2>&1; then
-                /system/bin/sh "$sp" daemon >/dev/null 2>&1 &
+                (
+                    echo $$ > /acct/cgroup.procs 2>/dev/null
+                    echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+                    exec /system/bin/sh "$sp" daemon >/dev/null 2>&1
+                ) &
             fi
             break
         fi
     done
 
-    # Watchdog loop to guarantee 3 navigation buttons, Stealth Proxy & anti-RILD overwrite
+    # Watchdog loop detached from init service cgroup
     (
+        echo $$ > /acct/cgroup.procs 2>/dev/null
+        echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
         for t in 5 10 15 20 30 45 60 90; do
             sleep $t
             sync_persistent_clock
+            sanitize_packages_and_timezone
             settings put global device_provisioned 1 2>/dev/null
             settings put secure user_setup_complete 1 2>/dev/null
             settings put secure sec_setupwizard_complete 1 2>/dev/null
@@ -431,7 +502,7 @@ if [ "$1" = "--boot-completed" ]; then
             if [ -f /proc/s9_serial ]; then
                 echo reload > /proc/s9_serial 2>/dev/null
             fi
-            if [ "$t" = "10" ]; then
+            if [ "$t" = "5" ] || [ "$t" = "10" ] || [ "$t" = "20" ]; then
                 for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
                     if [ -x "$sp" ] || [ -f "$sp" ]; then
                         /system/bin/sh "$sp" auto >/dev/null 2>&1
@@ -440,8 +511,6 @@ if [ "$1" = "--boot-completed" ]; then
                 done
             fi
             if [ "$t" = "20" ]; then
-                # Refresh counters after Android networking and validation have
-                # settled, so the snapshot includes post-boot proxy attempts.
                 dump_proxy_rule_snapshot
             fi
         done

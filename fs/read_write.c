@@ -465,7 +465,8 @@ ssize_t __vfs_read(struct file *file, char __user *buf, size_t count,
 }
 EXPORT_SYMBOL(__vfs_read);
 
-static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user *buf, size_t count)
+static ssize_t s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user *buf,
+						    ssize_t ret, size_t buf_cap)
 {
 	char *kbuf;
 	char *p;
@@ -474,43 +475,63 @@ static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user 
 	struct timespec64 now;
 	struct timespec64 up_ts;
 	struct tm res_tm;
-	char tmp_dt[24];
+	char tmp_dt[32];
 	char new_line[128];
 	u64 offset_sec;
 	u64 total_sec, d, rem, hr, mn, sc;
 	time64_t epoch;
 	int y, mo, day, h, mi, s;
-	int n;
+	int n, u_idx;
+	size_t cur_len = (size_t)ret;
+	size_t alloc_cap;
 	bool modified = false;
+	static const char *const user_prefixes[] = {
+		"Last logged in: +",
+		"Start time: +",
+		"Unlock time: +",
+		NULL
+	};
 
 	if (!file || !file_inode(file) || !S_ISFIFO(file_inode(file)->i_mode))
-		return;
+		return ret;
 	if (strcmp(current->comm, "dumpsys") != 0)
-		return;
-	if (count < 20 || count > 65536)
-		return;
+		return ret;
+	if (ret < 20 || ret > 65536 || buf_cap < (size_t)ret)
+		return ret;
 
-	kbuf = kmalloc(count + 1, GFP_KERNEL);
+	alloc_cap = max_t(size_t, buf_cap, (size_t)ret + 256);
+	if (alloc_cap > 65536)
+		alloc_cap = 65536;
+
+	kbuf = kmalloc(alloc_cap + 1, GFP_KERNEL);
 	if (!kbuf)
-		return;
+		return ret;
 
-	if (copy_from_user(kbuf, buf, count)) {
+	if (copy_from_user(kbuf, buf, cur_len)) {
 		kfree(kbuf);
-		return;
+		return ret;
 	}
-	kbuf[count] = '\0';
+	kbuf[cur_len] = '\0';
 
 	offset_sec = s9_ghost_uptime_offset_sec;
 	if (offset_sec == 0)
 		offset_sec = 17ULL * 86400ULL;
 
 	getnstimeofday64(&now);
+	get_monotonic_boottime(&up_ts);
+	total_sec = up_ts.tv_sec + offset_sec;
+	d = total_sec / 86400ULL;
+	rem = total_sec % 86400ULL;
+	hr = rem / 3600ULL;
+	rem %= 3600ULL;
+	mn = rem / 60ULL;
+	sc = rem % 60ULL;
 
 	/* 1. Shift Start clock time */
 	p = strstr(kbuf, "Start clock time: ");
 	if (p) {
 		dt = p + 18;
-		if (dt + 19 <= kbuf + count &&
+		if (dt + 19 <= kbuf + cur_len &&
 		    sscanf(dt, "%4d-%2d-%2d-%2d-%2d-%2d", &y, &mo, &day, &h, &mi, &s) == 6) {
 			epoch = mktime64(y, mo, day, h, mi, s);
 			if (epoch > (now.tv_sec - (time64_t)(offset_sec / 2))) {
@@ -533,7 +554,7 @@ static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user 
 	p = kbuf;
 	while ((p = strstr(p, "RESET:TIME: ")) != NULL) {
 		dt = p + 12;
-		if (dt + 19 <= kbuf + count &&
+		if (dt + 19 <= kbuf + cur_len &&
 		    sscanf(dt, "%4d-%2d-%2d-%2d-%2d-%2d", &y, &mo, &day, &h, &mi, &s) == 6) {
 			epoch = mktime64(y, mo, day, h, mi, s);
 			if (epoch > (now.tv_sec - (time64_t)(offset_sec / 2))) {
@@ -557,7 +578,7 @@ static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user 
 	p = strstr(kbuf, "Current start time: ");
 	if (p) {
 		dt = p + 20;
-		if (dt + 19 <= kbuf + count &&
+		if (dt + 19 <= kbuf + cur_len &&
 		    sscanf(dt, "%4d-%2d-%2d-%2d-%2d-%2d", &y, &mo, &day, &h, &mi, &s) == 6) {
 			epoch = mktime64(y, mo, day, h, mi, s);
 			if (epoch > (now.tv_sec - (time64_t)(offset_sec / 2))) {
@@ -582,14 +603,6 @@ static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user 
 		end_line = strchr(p, '\n');
 		if (end_line) {
 			size_t line_len = end_line - p;
-			get_monotonic_boottime(&up_ts);
-			total_sec = up_ts.tv_sec + offset_sec;
-			d = total_sec / 86400ULL;
-			rem = total_sec % 86400ULL;
-			hr = rem / 3600ULL;
-			rem %= 3600ULL;
-			mn = rem / 60ULL;
-			sc = rem % 60ULL;
 
 			if (hr > 0) {
 				n = snprintf(new_line, sizeof(new_line),
@@ -620,13 +633,152 @@ static void s9_ghost_filter_dumpsys_batterystats(struct file *file, char __user 
 		}
 	}
 
-	if (modified)
-		copy_to_user(buf, kbuf, count);
+	/* 5. Harmonize dumpsys user Start time / Last logged in / Unlock time with Ghost Uptime */
+	for (u_idx = 0; user_prefixes[u_idx]; u_idx++) {
+		const char *upfx = user_prefixes[u_idx];
+		size_t upfx_len = strlen(upfx);
+		p = strstr(kbuf, upfx);
+		if (p) {
+			char *val_start = p + upfx_len;
+			char *ago_pos = strstr(val_start, " ago");
+			char *nl_pos = strchr(val_start, '\n');
+			if (ago_pos && (!nl_pos || ago_pos < nl_pos)) {
+				size_t old_len = (size_t)(ago_pos - val_start);
+				n = snprintf(tmp_dt, sizeof(tmp_dt), "%llud%lluh%llum%llus",
+					     (unsigned long long)d, (unsigned long long)hr,
+					     (unsigned long long)mn, (unsigned long long)sc);
+				if (n > 0 && cur_len - old_len + (size_t)n <= min_t(size_t, buf_cap, alloc_cap)) {
+					memmove(val_start + n, ago_pos, cur_len - (size_t)(ago_pos - kbuf) + 1);
+					memcpy(val_start, tmp_dt, (size_t)n);
+					cur_len = cur_len - old_len + (size_t)n;
+					modified = true;
+				}
+			}
+		}
+	}
+
+	/* 6. Harmonize dumpsys bluetooth_manager "time since enabled" and "Enabled due to SYSTEM_BOOT" */
+	p = strstr(kbuf, "time since enabled: ");
+	if (p) {
+		char *val_start = p + 20;
+		char *colon = strchr(val_start, ':');
+		char *nl_pos = strchr(val_start, '\n');
+		if (colon && nl_pos && colon < nl_pos && (size_t)(colon - val_start) <= 6) {
+			size_t old_len = (size_t)(colon - val_start);
+			u64 total_hr = total_sec / 3600ULL;
+			n = snprintf(tmp_dt, sizeof(tmp_dt), "%02llu", (unsigned long long)total_hr);
+			if (n > 0 && cur_len - old_len + (size_t)n <= min_t(size_t, buf_cap, alloc_cap)) {
+				memmove(val_start + n, colon, cur_len - (size_t)(colon - kbuf) + 1);
+				memcpy(val_start, tmp_dt, (size_t)n);
+				cur_len = cur_len - old_len + (size_t)n;
+				modified = true;
+			}
+		}
+	}
+	p = strstr(kbuf, "  Enabled  due to SYSTEM_BOOT");
+	if (p && (size_t)(p - kbuf) >= 14) {
+		dt = p - 14;
+		epoch = now.tv_sec - (time64_t)total_sec + 7 * 3600;
+		time64_to_tm(epoch, 0, &res_tm);
+		snprintf(tmp_dt, sizeof(tmp_dt), "%02d-%02d %02d:%02d:%02d",
+			 res_tm.tm_mon + 1, res_tm.tm_mday,
+			 res_tm.tm_hour, res_tm.tm_min, res_tm.tm_sec);
+		memcpy(dt, tmp_dt, 14);
+		modified = true;
+	}
+
+	/* 7. Strip account removal lines in dumpsys account */
+	while ((p = strstr(kbuf, "action_called_account_remove")) != NULL ||
+	       (p = strstr(kbuf, "action_account_remove")) != NULL) {
+		char *l_start = p;
+		char *l_end = strchr(p, '\n');
+		while (l_start > kbuf && *(l_start - 1) != '\n')
+			l_start--;
+		if (l_end)
+			l_end++;
+		else
+			l_end = kbuf + cur_len;
+		memmove(l_start, l_end, (size_t)((kbuf + cur_len) - l_end) + 1);
+		cur_len -= (size_t)(l_end - l_start);
+		modified = true;
+	}
+
+	/* 8. Strip static neighbor WCDMA cells and harmonize carrier in dumpsys telephony.registry */
+	if (!strstr(kbuf, "mCellInfo=[")) {
+		char *null_mcc = strstr(kbuf, "mMcc=null mMnc=null");
+		char *eb = strchr(kbuf, ']');
+		if (null_mcc && eb && null_mcc < eb) {
+			memmove(kbuf, eb, (size_t)((kbuf + cur_len) - eb) + 1);
+			cur_len -= (size_t)(eb - kbuf);
+			modified = true;
+		}
+	}
+	while ((p = strstr(kbuf, ", CellInfoWcdma:{mRegistered=NO")) != NULL) {
+		char *eb = strchr(p, ']');
+		if (!eb) {
+			*p = '\0';
+			cur_len = (size_t)(p - kbuf);
+			modified = true;
+			break;
+		}
+		memmove(p, eb, (size_t)((kbuf + cur_len) - eb) + 1);
+		cur_len -= (size_t)(eb - p);
+		modified = true;
+	}
+	while ((p = strstr(kbuf, "mMnc=02 mAlphaLong=VN VINAPHONE mAlphaShort=VN VINAPHONE")) != NULL) {
+		static const char rep_cell[] = "mMnc=01 mAlphaLong=VN MOBIFONE mAlphaShort=VN MOBIFONE";
+		size_t old_len = 56;
+		size_t new_len = sizeof(rep_cell) - 1;
+		memmove(p + new_len, p + old_len, (size_t)((kbuf + cur_len) - (p + old_len)) + 1);
+		memcpy(p, rep_cell, new_len);
+		cur_len -= (old_len - new_len);
+		modified = true;
+	}
+	while ((p = strstr(kbuf, "mMnc=02 mAlphaLong=VN VINAPHONE mAlphaShort=GPC")) != NULL) {
+		static const char rep_gpc[] = "mMnc=01 mAlphaLong=VN MOBIFONE  mAlphaShort=VMS";
+		memcpy(p, rep_gpc, 47);
+		modified = true;
+	}
+
+	/* 9. Shift ISO-8601 YYYY-MM-DDTHH:MM:SS timestamps in dumpsys logs (e.g., telephony.registry) */
+	for (p = kbuf; p + 19 <= kbuf + cur_len; p++) {
+		if (p[0] == '2' && p[1] == '0' && p[2] == '2' &&
+		    p[4] == '-' && p[7] == '-' && p[10] == 'T' &&
+		    p[13] == ':' && p[16] == ':') {
+			if (sscanf(p, "%4d-%2d-%2dT%2d:%2d:%2d", &y, &mo, &day, &h, &mi, &s) == 6) {
+				epoch = mktime64(y, mo, day, h, mi, s);
+				if (epoch > (now.tv_sec - (time64_t)(offset_sec / 2))) {
+					epoch -= offset_sec;
+					time64_to_tm(epoch, 0, &res_tm);
+					snprintf(tmp_dt, sizeof(tmp_dt), "%04ld-%02d-%02dT%02d:%02d:%02d",
+						 (long)res_tm.tm_year + 1900,
+						 res_tm.tm_mon + 1,
+						 res_tm.tm_mday,
+						 res_tm.tm_hour,
+						 res_tm.tm_min,
+						 res_tm.tm_sec);
+					memcpy(p, tmp_dt, 19);
+					modified = true;
+					p += 18;
+				}
+			}
+		}
+	}
+
+	if (modified) {
+		if (cur_len == 0) {
+			kbuf[0] = ' ';
+			cur_len = 1;
+		}
+		if (!copy_to_user(buf, kbuf, cur_len))
+			ret = (ssize_t)cur_len;
+	}
 
 	kfree(kbuf);
+	return ret;
 }
 
-static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size_t count)
+static ssize_t s9_ghost_filter_build_prop(struct file *file, char __user *buf, size_t count, ssize_t ret)
 {
 	const char *dname;
 	size_t dlen;
@@ -637,30 +789,50 @@ static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size
 	static const size_t sdk_prefix_len = 21;
 	const char *target = S9_TARGET_SDK_STR;
 	size_t target_len = strlen(target);
+	size_t cur_len = (size_t)ret;
 
-	if (!file || !file->f_path.dentry || !buf || count < 24 || count > 1048576)
-		return;
+	if (!file || !file->f_path.dentry || !buf || ret < 16 || ret > 1048576)
+		return ret;
 
 	dname = file->f_path.dentry->d_name.name;
 	if (!dname)
-		return;
+		return ret;
+
+	if (strcmp(dname, "vdc.rc") == 0) {
+		kbuf = kmalloc(cur_len + 1, GFP_KERNEL);
+		if (!kbuf)
+			return ret;
+		if (!copy_from_user(kbuf, buf, cur_len)) {
+			kbuf[cur_len] = '\0';
+			p = strstr(kbuf, " (neutralized by Ghost)");
+			if (p) {
+				size_t rm_len = 23;
+				memmove(p, p + rm_len, (kbuf + cur_len) - (p + rm_len) + 1);
+				cur_len -= rm_len;
+				if (!copy_to_user(buf, kbuf, cur_len))
+					ret = (ssize_t)cur_len;
+			}
+		}
+		kfree(kbuf);
+		return ret;
+	}
 
 	dlen = strlen(dname);
 	if (strcmp(dname, "build.prop") != 0 &&
 	    strcmp(dname, "default.prop") != 0 &&
 	    (dlen < 5 || strcmp(dname + dlen - 5, ".prop") != 0))
-		return;
+		return ret;
 
 	kbuf = kmalloc(count + 1, GFP_KERNEL);
 	if (!kbuf)
-		return;
+		return ret;
 
-	if (copy_from_user(kbuf, buf, count)) {
+	if (copy_from_user(kbuf, buf, cur_len)) {
 		kfree(kbuf);
-		return;
+		return ret;
 	}
-	kbuf[count] = '\0';
-	end = kbuf + count;
+	kbuf[cur_len] = '\0';
+	end = kbuf + cur_len;
 
 	p = kbuf;
 	while (p && p < end) {
@@ -716,11 +888,12 @@ static void s9_ghost_filter_build_prop(struct file *file, char __user *buf, size
 
 	if (modified) {
 		size_t new_count = min((size_t)(end - kbuf), count);
-		if (copy_to_user(buf, kbuf, new_count))
-			pr_warn_once("s9_ghost: copy_to_user failed in build_prop filter\n");
+		if (!copy_to_user(buf, kbuf, new_count))
+			ret = (ssize_t)new_count;
 	}
 
 	kfree(kbuf);
+	return ret;
 }
 
 static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t count, ssize_t ret, loff_t *pos)
@@ -730,17 +903,18 @@ static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t
 	char *p;
 	ssize_t delta = 0;
 	size_t cur_len = ret;
+	bool modified = false;
 
 	if (!file || !file->f_path.dentry || !buf || ret < 18 || ret >= count)
 		return 0;
 
 	/*
-	 * Whitelist: All system daemons (UID < 10000: init, vold, system_server, etc.)
+	 * Whitelist: Core system daemons (UID < 2000: init, vold, system_server, etc.)
 	 * MUST see the real unencrypted fstab so Android mounts /data cleanly as plain ext4
 	 * without triggering encryption.
-	 * Only untrusted third-party apps (UID >= 10000) see forceencrypt=footer!
+	 * Shell (UID 2000) and third-party apps (UID >= 10000) see forceencrypt=footer and fstab.starlte!
 	 */
-	if (current_uid().val < 10000)
+	if (current_uid().val < 2000)
 		return 0;
 
 	dname = file->f_path.dentry->d_name.name;
@@ -758,6 +932,17 @@ static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t
 	kbuf[ret] = '\0';
 
 	p = kbuf;
+	while ((p = strstr(p, "fstab.star2lte")) != NULL) {
+		size_t tail_len = strlen(p + 14);
+		memmove(p + 13, p + 14, tail_len + 1);
+		memcpy(p, "fstab.starlte", 13);
+		p += 13;
+		cur_len -= 1;
+		delta -= 1;
+		modified = true;
+	}
+
+	p = kbuf;
 	while ((p = strstr(p, "encryptable=footer")) != NULL) {
 		size_t tail_len = strlen(p + 18);
 		if (cur_len + 1 <= count) {
@@ -766,15 +951,31 @@ static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t
 			p += 19;
 			cur_len += 1;
 			delta += 1;
+			modified = true;
 		} else {
 			break;
 		}
 	}
 
+	p = strstr(kbuf, "wait,check,quota");
+	if (p && !strstr(kbuf, "forceencrypt=footer")) {
+		static const char ins[] = "wait,check,forceencrypt=footer,quota";
+		size_t old_len = 16;
+		size_t new_len = sizeof(ins) - 1;
+		size_t add_len = new_len - old_len;
+		if (cur_len + add_len <= count) {
+			size_t tail_len = strlen(p + old_len);
+			memmove(p + new_len, p + old_len, tail_len + 1);
+			memcpy(p, ins, new_len);
+			cur_len += add_len;
+			delta += (ssize_t)add_len;
+			modified = true;
+		}
+	}
 
-	if (delta > 0) {
+	if (modified) {
 		if (!copy_to_user(buf, kbuf, cur_len)) {
-			if (pos)
+			if (pos && delta > 0)
 				*pos += delta;
 		} else {
 			delta = 0;
@@ -820,8 +1021,8 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 		if (ret > 0) {
 			fsnotify_access(file);
 			add_rchar(current, ret);
-			s9_ghost_filter_dumpsys_batterystats(file, buf, ret);
-			s9_ghost_filter_build_prop(file, buf, ret);
+			ret = s9_ghost_filter_dumpsys_batterystats(file, buf, ret, count);
+			ret = s9_ghost_filter_build_prop(file, buf, count, ret);
 			ret += s9_ghost_filter_fstab(file, buf, count, ret, pos);
 		}
 		inc_syscr(current);

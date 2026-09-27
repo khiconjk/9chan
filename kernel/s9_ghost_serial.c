@@ -90,6 +90,11 @@ static const char *const s9_prop_contexts[] = {
 	"u:object_r:sec_bluetooth_prop:s0",
 	"u:object_r:wifi_prop:s0",
 	"u:object_r:exported_wifi_prop:s0",
+	"u:object_r:wifi_log_prop:s0",
+	"u:object_r:audio_prop:s0",
+	"u:object_r:bootloader_boot_reason_prop:s0",
+	"u:object_r:system_boot_reason_prop:s0",
+	"u:object_r:last_boot_reason_prop:s0",
 	"u:object_r:debug_prop:s0",
 	NULL
 };
@@ -244,10 +249,39 @@ static void s9_ghost_harmonize_properties(void)
 	const char *fp = s9_ghost_get_prop("ro.build.fingerprint");
 	const char *inc = s9_ghost_get_prop("ro.build.version.incremental");
 	const char *sales_code = s9_ghost_get_prop("ro.csc.sales_code");
+	const char *unified_csc = "SKC";
+	const char *csc_country = "KOREA";
+	const char *csc_iso = "KR";
 
-	/* 1. Model harmonization across system, vendor, odm, boot */
+	/* 1. Model & CSC/OMC harmonization across system, vendor, odm, boot */
 	if (model && *model) {
 		char selinux_buf[64];
+		char prod_code[64];
+		char region_props[32];
+		char omc_path[64];
+		char omc_etcpath[64];
+		char omc_respath[64];
+		bool is_kr_model = (strstr(model, "960N") || strstr(model, "965N") ||
+				    model[strlen(model) - 1] == 'N');
+
+		if (is_kr_model) {
+			unified_csc = "SKC";
+			csc_country = "KOREA";
+			csc_iso = "KR";
+		} else {
+			if (sales_code && *sales_code &&
+			    strcmp(sales_code, "KTC") && strcmp(sales_code, "SKC") &&
+			    strcmp(sales_code, "LUC") && strcmp(sales_code, "KOO")) {
+				unified_csc = sales_code;
+			} else {
+				unified_csc = "XXV";
+			}
+			if (!strcmp(unified_csc, "XXV")) {
+				csc_country = "VIETNAM";
+				csc_iso = "VN";
+			}
+		}
+
 		s9_ghost_set_prop("ro.product.system.model", model);
 		s9_ghost_set_prop("ro.product.vendor.model", model);
 		s9_ghost_set_prop("ro.product.odm.model", model);
@@ -258,16 +292,33 @@ static void s9_ghost_harmonize_properties(void)
 		snprintf(selinux_buf, sizeof(selinux_buf), "SEPF_%s_10_0030", model);
 		s9_ghost_set_prop("selinux.policy_version", selinux_buf);
 
-		/* RIL product code: <MODEL>ZRA<SALES_CODE> (default XXV) */
-		{
-			char prod_code[64];
-			const char *sc = (sales_code && *sales_code) ? sales_code : "XXV";
-			snprintf(prod_code, sizeof(prod_code), "%sZRA%s", model, sc);
-			s9_ghost_set_prop("ril.product_code", prod_code);
-			s9_ghost_set_prop("vendor.ril.product_code", prod_code);
-		}
+		/* Unified CSC / OMC / CarrierID / Product Code */
+		s9_ghost_set_prop("ro.csc.sales_code", unified_csc);
+		s9_ghost_set_prop("ro.csc.omcnw_code", unified_csc);
+		s9_ghost_set_prop("ro.csc.omcnw_code2", unified_csc);
+		s9_ghost_set_prop("ro.boot.carrierid", unified_csc);
+		s9_ghost_set_prop("persist.audio.sales_code", unified_csc);
+		s9_ghost_set_prop("ro.csc.country_code", csc_country);
+		s9_ghost_set_prop("ro.csc.countryiso_code", csc_iso);
 
-		/* Baseband and CSC version harmonization */
+		snprintf(region_props, sizeof(region_props), "%s.%s", unified_csc, unified_csc);
+		s9_ghost_set_prop("ril.region_props", region_props);
+
+		snprintf(prod_code, sizeof(prod_code), "%sZRA%s", model, unified_csc);
+		s9_ghost_set_prop("ril.product_code", prod_code);
+		s9_ghost_set_prop("vendor.ril.product_code", prod_code);
+
+		snprintf(omc_path, sizeof(omc_path), "/odm/omc/%s/conf", unified_csc);
+		snprintf(omc_etcpath, sizeof(omc_etcpath), "/odm/omc/%s/etc", unified_csc);
+		snprintf(omc_respath, sizeof(omc_respath), "/odm/omc/%s/res", unified_csc);
+		s9_ghost_set_prop("persist.sys.omc_path", omc_path);
+		s9_ghost_set_prop("persist.sys.omc_etcpath", omc_etcpath);
+		s9_ghost_set_prop("persist.sys.omc_respath", omc_respath);
+		s9_ghost_set_prop("persist.sys.omcnw_path", omc_path);
+		s9_ghost_set_prop("persist.sys.omcnw_path2", omc_path);
+		s9_ghost_set_prop("persist.sys.carrierid_etcpath", omc_etcpath);
+
+		/* Baseband, CSC version & Bluetooth FW version harmonization */
 		{
 			const char *raw_model = model;
 			if (!strncmp(raw_model, "SM-", 3))
@@ -275,25 +326,32 @@ static void s9_ghost_harmonize_properties(void)
 			if (strlen(raw_model) >= 4) {
 				char csc_buf[64];
 				char bb_buf[64];
-				snprintf(csc_buf, sizeof(csc_buf), "%sOKR5FVG2", raw_model);
+				if (strstr(raw_model, "F")) {
+					snprintf(csc_buf, sizeof(csc_buf), "%sOXMHFVB4", raw_model);
+					snprintf(bb_buf, sizeof(bb_buf), "%sXXUHFVB4", raw_model);
+				} else {
+					snprintf(csc_buf, sizeof(csc_buf), "%sOKR5FVG2", raw_model);
+					snprintf(bb_buf, sizeof(bb_buf), "%sKOU5FVA1", raw_model);
+				}
 				s9_ghost_set_prop("ril.official_cscver", csc_buf);
 				s9_ghost_set_prop("ro.omc.build.version", csc_buf);
-
-				if (strstr(raw_model, "F"))
-					snprintf(bb_buf, sizeof(bb_buf), "%sXXUHFVB4", raw_model);
-				else
-					snprintf(bb_buf, sizeof(bb_buf), "%sKOU5FVA1", raw_model);
 				s9_ghost_set_prop("gsm.version.baseband", bb_buf);
 				s9_ghost_set_prop("ril.sw_ver", bb_buf);
 			}
-			/* Hardware Match Constraint: Model-specific LCD density */
-			if (strstr(model, "G965"))
+			/* Hardware Match Constraint: Model-specific LCD density & BT FW */
+			if (strstr(model, "G965")) {
 				s9_ghost_set_prop("ro.sf.lcd_density", "529");
-			else if (strstr(model, "N960"))
-				s9_ghost_set_prop("ro.sf.lcd_density", "516");
-			else
+				s9_ghost_set_prop("vendor.bluetooth_fw_ver",
+						  "BCM4361B2 Star2 E32A ANT1 [Baseline: 0111]");
+			} else {
 				s9_ghost_set_prop("ro.sf.lcd_density", "570");
+				s9_ghost_set_prop("vendor.bluetooth_fw_ver",
+						  "BCM4361B2 Star1 E32A ANT1 [Baseline: 0111]");
+			}
 		}
+	} else {
+		s9_ghost_set_prop("vendor.bluetooth_fw_ver",
+				  "BCM4361B2 Star1 E32A ANT1 [Baseline: 0111]");
 	}
 
 	/* 2. Device & Build Product harmonization across system, vendor, odm */
@@ -388,21 +446,43 @@ static void s9_ghost_harmonize_properties(void)
 	s9_ghost_set_prop("security.securehw.available", "true");
 	s9_ghost_set_prop("security.securenvm.available", "true");
 
-	/* 7. Hardware Serials in boot & ril */
+	/* 6c. Block device, OEM Unlock, and Boot Reason harmonization */
+	s9_ghost_set_prop("dev.mnt.blk.data", "dm-3");
+	s9_ghost_set_prop("ro.oem_unlock_supported", "0");
+	s9_ghost_set_prop("sys.oem_unlock_allowed", "0");
+	s9_ghost_set_prop("ro.boot.bootreason", "reboot");
+	s9_ghost_set_prop("sys.boot.reason", "reboot");
+	s9_ghost_set_prop("sys.boot.reason.last", "reboot");
+	s9_ghost_set_prop("persist.sys.boot.reason", "");
+	s9_ghost_set_prop("persist.sys.boot.reason.history", "reboot");
+
+	/* 7. Hardware Serials unified across ro.serialno, ro.boot.serialno & ril.serialnumber */
 	if (s9_active_serial_prof.ap_serial[0])
 		s9_ghost_set_prop("ro.boot.ap_serial", s9_active_serial_prof.ap_serial);
 	if (s9_active_serial_prof.em_did[0])
 		s9_ghost_set_prop("ro.boot.em.did", s9_active_serial_prof.em_did);
-	if (s9_active_serial_prof.samsung_serial[0])
-		s9_ghost_set_prop("ril.serialnumber", s9_active_serial_prof.samsung_serial);
+	if (s9_active_serial_prof.serialno[0]) {
+		strlcpy(s9_active_serial_prof.samsung_serial, s9_active_serial_prof.serialno,
+			sizeof(s9_active_serial_prof.samsung_serial));
+		snprintf(s9_active_serial_prof.efs_serial_line,
+			 sizeof(s9_active_serial_prof.efs_serial_line),
+			 "%s,20180517,AGZ0797860\n", s9_active_serial_prof.serialno);
+		s9_ghost_set_prop("ro.serialno", s9_active_serial_prof.serialno);
+		s9_ghost_set_prop("ro.boot.serialno", s9_active_serial_prof.serialno);
+		s9_ghost_set_prop("ril.serialnumber", s9_active_serial_prof.serialno);
+	}
 
-	/* 8. Telephony & Carrier harmonization ("Có SIM nhưng không có sóng / Unknown") */
+	/* 8. Telephony & Carrier harmonization (100% unified MCC/MNC across SIM, RIL & SecOperator) */
 	{
 		const char *c_name = s9_ghost_get_prop("carrier_provider_name");
 		const char *c_code = s9_ghost_get_prop("carrier_provider_code");
-		if (!c_name)
+		if (!c_name || !*c_name)
+			c_name = s9_ghost_get_prop("gsm.sim.operator.alpha");
+		if (!c_name || !*c_name)
 			c_name = s9_ghost_get_prop("gsm.operator.alpha");
-		if (!c_code)
+		if (!c_code || !*c_code)
+			c_code = s9_ghost_get_prop("gsm.sim.operator.numeric");
+		if (!c_code || !*c_code)
 			c_code = s9_ghost_get_prop("gsm.operator.numeric");
 
 		if (!c_name || !*c_name || !c_code || !*c_code) {
@@ -421,11 +501,13 @@ static void s9_ghost_harmonize_properties(void)
 			s9_ghost_set_prop("gsm.sim.operator.iso-country", "");
 			s9_ghost_set_prop("gsm.operator.isroaming", "false");
 			s9_ghost_set_prop("ril.simoperator", "");
+			s9_ghost_set_prop("persist.sys.sec_operator", "");
+			s9_ghost_set_prop("ril.rejectedPlmn", "");
 			s9_ghost_set_prop("ril.epdg.currenMno", "");
 			s9_ghost_set_prop("ril.wfc.default_spn", "");
 			s9_ghost_set_prop("gsm.STK_SETUP_MENU", "");
 		} else {
-			/* Có nhà mạng và có mã mạng -> In-Service / LTE / Connected */
+			/* Unified In-Service / LTE / Carrier across all telephony properties */
 			char epdg_buf[64];
 			const char *net_type = s9_ghost_get_prop("gsm.network.type");
 			if (!net_type || !*net_type || !strcmp(net_type, "Unknown")) {
@@ -443,12 +525,15 @@ static void s9_ghost_harmonize_properties(void)
 			s9_ghost_set_prop("gsm.sim.gsmoperator.numeric", c_code);
 			s9_ghost_set_prop("gsm.operator.isroaming", "false");
 			s9_ghost_set_prop("ril.simoperator", c_code);
+			s9_ghost_set_prop("persist.sys.sec_operator", c_code);
+			s9_ghost_set_prop("ril.rejectedPlmn", "");
 			s9_ghost_set_prop("ril.wfc.default_spn", c_name);
 
-			/* Derive ISO Country from MCC (e.g. 452 -> vn) */
+			/* Derive ISO Country & Timezone from MCC (e.g. 452 -> vn / Asia/Ho_Chi_Minh) */
 			if (!strncmp(c_code, "452", 3)) {
 				s9_ghost_set_prop("gsm.operator.iso-country", "vn");
 				s9_ghost_set_prop("gsm.sim.operator.iso-country", "vn");
+				s9_ghost_set_prop("persist.sys.timezone", "Asia/Ho_Chi_Minh");
 			} else if (!strncmp(c_code, "450", 3)) {
 				s9_ghost_set_prop("gsm.operator.iso-country", "kr");
 				s9_ghost_set_prop("gsm.sim.operator.iso-country", "kr");
@@ -749,6 +834,14 @@ static void s9_sanitize_tokens(char *buf, size_t max_len)
 	s9_replace_token_value(buf, max_len, "androidboot.verifiedbootstate=", "green");
 	s9_replace_token_value(buf, max_len, "androidboot.veritymode=", "enforcing");
 	s9_replace_token_value(buf, max_len, "androidboot.vbmeta.device_state=", "locked");
+
+	/* 4. Boot reason & CarrierID sanitization */
+	s9_replace_token_value(buf, max_len, "androidboot.bootreason=", "reboot");
+	{
+		const char *cid = s9_ghost_get_prop("ro.boot.carrierid");
+		s9_replace_token_value(buf, max_len, "androidboot.carrierid=",
+				       (cid && *cid) ? cid : "SKC");
+	}
 }
 
 void s9_ghost_sanitize_cmdline(char *cmd, size_t max_len)
@@ -821,7 +914,10 @@ bool s9_ghost_is_cloaked_efs_path(const struct path *path)
 		    strcmp(dname, "meid"))
 			return false;
 	} else if (!strcmp(pname, "imei")) {
-		if (strcmp(dname, "imei.dat"))
+		if (strcmp(dname, "imei.dat") &&
+		    strcmp(dname, "mps_code.dat") &&
+		    strcmp(dname, "omcnw_code.dat") &&
+		    strcmp(dname, "omcnw_code2.dat"))
 			return false;
 	} else if (!strcmp(pname, "wifi")) {
 		if (strcmp(dname, ".mac.info") && strcmp(dname, ".mac.cob"))
@@ -895,9 +991,17 @@ bool s9_ghost_get_cloaked_efs_payload(const char *dname, const char *pname,
 				found = true;
 			}
 		}
-	} else if (!strcmp(pname, "imei") && !strcmp(dname, "imei.dat")) {
-		if (s9_active_serial_prof.imei[0] != '\0') {
-			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.imei);
+	} else if (!strcmp(pname, "imei")) {
+		if (!strcmp(dname, "imei.dat")) {
+			if (s9_active_serial_prof.imei[0] != '\0') {
+				slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.imei);
+				found = true;
+			}
+		} else if (!strcmp(dname, "mps_code.dat") ||
+			   !strcmp(dname, "omcnw_code.dat") ||
+			   !strcmp(dname, "omcnw_code2.dat")) {
+			const char *csc = s9_ghost_get_prop("ro.csc.sales_code");
+			slen = snprintf(out, out_len, "%s", (csc && *csc) ? csc : "SKC");
 			found = true;
 		}
 	} else if (!strcmp(pname, "wifi") && (!strcmp(dname, ".mac.info") || !strcmp(dname, ".mac.cob"))) {
@@ -1190,10 +1294,16 @@ int s9_ghost_patch_properties(void)
 
 	s9_ensure_init();
 
-	/* 1. Patch ro.serialno and ro.boot.serialno */
+	/* 1. Patch ro.serialno, ro.boot.serialno and ril.serialnumber uniformly */
 	s9_patch_prop_file_one("u:object_r:serialno_prop:s0", "ro.serialno",
 			       s9_active_serial_prof.serialno, strlen(s9_active_serial_prof.serialno));
 	s9_patch_prop_file_one("u:object_r:serialno_prop:s0", "ro.boot.serialno",
+			       s9_active_serial_prof.serialno, strlen(s9_active_serial_prof.serialno));
+	s9_patch_prop_file_one("u:object_r:ril_serialno_prop:s0", "ril.serialnumber",
+			       s9_active_serial_prof.serialno, strlen(s9_active_serial_prof.serialno));
+	s9_patch_prop_file_one("u:object_r:radio_prop:s0", "ril.serialnumber",
+			       s9_active_serial_prof.serialno, strlen(s9_active_serial_prof.serialno));
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ril.serialnumber",
 			       s9_active_serial_prof.serialno, strlen(s9_active_serial_prof.serialno));
 
 	/* 2. Patch ro.boot.ap_serial and ro.boot.em.did in exported2_default_prop:s0 */
@@ -1202,7 +1312,7 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.em.did",
 			       s9_active_serial_prof.em_did, strlen(s9_active_serial_prof.em_did));
 
-	/* 3. Patch boot flags in exported2_default_prop:s0 and vendor_default_prop:s0 */
+	/* 3. Patch boot flags, bootreason, OEM unlock, and block device in property contexts */
 	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.warranty_bit", "0", 1);
 	s9_patch_prop_file_one("u:object_r:vendor_default_prop:s0", "ro.vendor.boot.warranty_bit", "0", 1);
 	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.wb.hs", "0000", 4);
@@ -1213,7 +1323,23 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.selinux", "enforcing", 9);
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.build.selinux", "1", 1);
 
-	/* 4. Patch crypto state & type strictly AFTER boot_completed == 1 */
+	s9_patch_prop_file_one("u:object_r:bootloader_boot_reason_prop:s0", "ro.boot.bootreason", "reboot", 6);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.bootreason", "reboot", 6);
+	s9_patch_prop_file_one("u:object_r:system_boot_reason_prop:s0", "sys.boot.reason", "reboot", 6);
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "sys.boot.reason", "reboot", 6);
+	s9_patch_prop_file_one("u:object_r:last_boot_reason_prop:s0", "sys.boot.reason.last", "reboot", 6);
+	s9_patch_prop_file_one("u:object_r:last_boot_reason_prop:s0", "persist.sys.boot.reason", "", 0);
+	s9_patch_prop_file_one("u:object_r:last_boot_reason_prop:s0", "persist.sys.boot.reason.history", "reboot", 6);
+
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "ro.oem_unlock_supported", "0", 1);
+	s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.oem_unlock_supported", "0", 1);
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "sys.oem_unlock_allowed", "0", 1);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.oem_unlock_allowed", "0", 1);
+
+	s9_patch_prop_file_one("u:object_r:system_prop:s0", "dev.mnt.blk.data", "dm-3", 4);
+	s9_patch_prop_file_one("u:object_r:default_prop:s0", "dev.mnt.blk.data", "dm-3", 4);
+
+	/* 4. Patch crypto state & ADB/USB cloaking strictly AFTER boot_completed == 1 */
 	if (s9_allow_crypto_cloak) {
 		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.state", "encrypted", 9);
 		s9_patch_prop_file_one("u:object_r:vold_status_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
@@ -1225,6 +1351,17 @@ int s9_ghost_patch_properties(void)
 		s9_patch_prop_file_one("u:object_r:system_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
 		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.state", "encrypted", 9);
 		s9_patch_prop_file_one("u:object_r:exported_default_prop:s0", "ro.crypto.type", S9_CRYPTO_TYPE_STR, strlen(S9_CRYPTO_TYPE_STR));
+
+		/* Cloak ADB & USB debugging properties in-memory while keeping adbd daemon alive */
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "init.svc.adbd", "stopped", 7);
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "sys.usb.state", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_radio_prop:s0", "sys.usb.state", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "sys.usb.state", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:system_prop:s0", "persist.sys.usb.config", "mtp", 3);
+		s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.usb.config", "mtp", 3);
 	}
 
 	/* 5. Always lock ro.build.version.sdk to target SDK */
@@ -1281,11 +1418,13 @@ int s9_ghost_patch_properties(void)
 	s9_patch_prop_file_one("u:object_r:default_prop:s0", "persist.sys.vzw_setup_running", "false", 5);
 	s9_patch_prop_file_one("u:object_r:system_prop:s0", "persist.sys.vzw_setup_running", "false", 5);
 
-	/* 9. Explicit patch for RIL, OMC and Security props */
+	/* 9. Explicit patch for RIL, OMC, Bluetooth FW and Security props */
 	{
 		const char *prod_code = s9_ghost_get_prop("ril.product_code");
 		const char *sec_policy = s9_ghost_get_prop("selinux.policy_version");
 		const char *csc_ver = s9_ghost_get_prop("ril.official_cscver");
+		const char *bt_fw = s9_ghost_get_prop("vendor.bluetooth_fw_ver");
+		const char *sales_c = s9_ghost_get_prop("ro.csc.sales_code");
 
 		if (prod_code && *prod_code) {
 			s9_patch_prop_file_one("u:object_r:radio_prop:s0", "ril.product_code", prod_code, strlen(prod_code));
@@ -1298,6 +1437,14 @@ int s9_ghost_patch_properties(void)
 			s9_patch_prop_file_one("u:object_r:radio_prop:s0", "ril.official_cscver", csc_ver, strlen(csc_ver));
 			s9_patch_prop_file_one("u:object_r:exported_config_prop:s0", "ro.omc.build.version", csc_ver, strlen(csc_ver));
 		}
+		if (bt_fw && *bt_fw) {
+			s9_patch_prop_file_one("u:object_r:wifi_log_prop:s0", "vendor.bluetooth_fw_ver", bt_fw, strlen(bt_fw));
+			s9_patch_prop_file_one("u:object_r:vendor_default_prop:s0", "vendor.bluetooth_fw_ver", bt_fw, strlen(bt_fw));
+		}
+		if (sales_c && *sales_c) {
+			s9_patch_prop_file_one("u:object_r:audio_prop:s0", "persist.audio.sales_code", sales_c, strlen(sales_c));
+			s9_patch_prop_file_one("u:object_r:exported2_default_prop:s0", "ro.boot.carrierid", sales_c, strlen(sales_c));
+		}
 		{
 			const char *bb_ver = s9_ghost_get_prop("gsm.version.baseband");
 			if (bb_ver && *bb_ver) {
@@ -1307,7 +1454,7 @@ int s9_ghost_patch_properties(void)
 		}
 	}
 
-	/* 10. Explicit patch for telephony / carrier properties */
+	/* 10. Explicit patch for telephony / carrier / OMC properties */
 	{
 		static const char *const tele_keys[] = {
 			"gsm.sim.state", "vendor.gsm.sim.state",
@@ -1318,7 +1465,16 @@ int s9_ghost_patch_properties(void)
 			"gsm.sim.gsmoperator.numeric",
 			"gsm.operator.iso-country", "gsm.sim.operator.iso-country",
 			"gsm.operator.isroaming", "ril.simoperator",
+			"persist.sys.sec_operator", "ril.rejectedPlmn",
 			"ril.epdg.currenMno", "ril.wfc.default_spn",
+			"ril.region_props", "ro.csc.sales_code",
+			"ro.csc.omcnw_code", "ro.csc.omcnw_code2",
+			"ro.csc.country_code", "ro.csc.countryiso_code",
+			"ro.boot.carrierid", "persist.audio.sales_code",
+			"persist.sys.omc_path", "persist.sys.omc_etcpath",
+			"persist.sys.omc_respath", "persist.sys.omcnw_path",
+			"persist.sys.omcnw_path2", "persist.sys.carrierid_etcpath",
+			"persist.sys.timezone",
 			"gsm.STK_SETUP_MENU", NULL
 		};
 		static const char *const tele_ctx[] = {
@@ -1327,6 +1483,8 @@ int s9_ghost_patch_properties(void)
 			"u:object_r:exported_radio_prop:s0",
 			"u:object_r:vendor_radio_prop:s0",
 			"u:object_r:system_radio_prop:s0",
+			"u:object_r:system_prop:s0",
+			"u:object_r:exported2_default_prop:s0",
 			"u:object_r:default_prop:s0",
 			NULL
 		};
@@ -1341,7 +1499,7 @@ int s9_ghost_patch_properties(void)
 		}
 	}
 
-	/* 11. Apply dynamic properties loaded from ghost.conf while preserving ADB. */
+	/* 11. Apply dynamic properties loaded from ghost.conf across all contexts. */
 	if (s9_ghost_prop_count > 0) {
 		for (ctx_idx = 0; s9_prop_contexts[ctx_idx]; ctx_idx++) {
 			s9_patch_prop_context_batch(s9_prop_contexts[ctx_idx]);
@@ -1468,10 +1626,8 @@ static void s9_config_reload_work_fn(struct work_struct *work)
 		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(10000));
 	else if (passes == 6)
 		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(15000));
-	else if (passes == 7)
-		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(20000));
-	else if (passes == 8)
-		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(30000));
+	else
+		schedule_delayed_work(&s9_config_reload_work, msecs_to_jiffies(15000));
 }
 
 /*

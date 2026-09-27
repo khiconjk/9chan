@@ -5,14 +5,16 @@
 # Automatically hijacks net.typeblog.socks (SocksDroid) to eliminate tun0 & VPN flag!
 # ==============================================================================
 
-umask 022
+umask 077
+echo $$ > /acct/cgroup.procs 2>/dev/null
+echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
 
 CONF_DIR="/data/adb/s9_proxy"
 mkdir -p "$CONF_DIR" 2>/dev/null
-chmod 0770 "$CONF_DIR" 2>/dev/null
-chown 0:2000 "$CONF_DIR" 2>/dev/null
-chmod 0710 /data/adb 2>/dev/null
-chown 0:2000 /data/adb 2>/dev/null
+chmod 0700 "$CONF_DIR" 2>/dev/null
+chown 0:0 "$CONF_DIR" 2>/dev/null
+chmod 0700 /data/adb 2>/dev/null
+chown 0:0 /data/adb 2>/dev/null
 umount -l /system/etc/init/fastboot_seed.sh 2>/dev/null
 rm -f /data/adb/fastboot_seed.sh /data/local/tmp/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot "$CONF_DIR/stealth_proxy.rules.snapshot" 2>/dev/null
 if [ -d /data/adb ] && [ "$0" != "/data/adb/stealth_proxy.sh" ]; then
@@ -442,19 +444,14 @@ case "$1" in
             PASS_SIG=$(printf '%s' "$P_PASS" | cksum 2>/dev/null | cut -d' ' -f1)
             TARGET_SIG="${P_TYPE}://${P_USER}@${P_HOST}:${P_PORT}:${PASS_SIG}"
             CUR_SIG=$(cat "$STATE_FILE" 2>/dev/null)
-            # Do not tear down a healthy live proxy just to repeat a TCP probe
-            # every guardian tick. A transient probe failure must not remove
-            # working redirects/UDP rules and strand Android without a route.
             if [ "$TARGET_SIG" = "$CUR_SIG" ] && redsocks_is_running && \
                tcp_redirects_are_active && \
                iptables -C OUTPUT -j "$LOCK4_CHAIN" >/dev/null 2>&1; then
                 kill_vpn_tun0
+                echo ACTIVE > "$STATUS_FILE"
+                chown 0:0 "$STATUS_FILE" 2>/dev/null
+                chmod 0600 "$STATUS_FILE" 2>/dev/null
                 exit 0
-            fi
-            if ! toybox nc -w 3 "$P_HOST" "$P_PORT" </dev/null >/dev/null 2>&1; then
-                stop_proxy
-                echo "[ERROR] Proxy endpoint $P_HOST:$P_PORT is offline or unreachable."
-                exit 1
             fi
             if ! install_fail_closed_guard "$P_HOST" "$P_PORT" "$P_TYPE"; then
                 echo "[!] Could not enforce the fail-closed firewall; refusing to change VPN state."
@@ -464,11 +461,16 @@ case "$1" in
             exec "$0" start "$P_HOST" "$P_PORT" "$P_USER" "$P_PASS" "$P_TYPE"
         else
             stop_proxy
+            echo STOPPED > "$STATUS_FILE"
+            chown 0:0 "$STATUS_FILE" 2>/dev/null
+            chmod 0600 "$STATUS_FILE" 2>/dev/null
             exit 0
         fi
         ;;
 
     daemon)
+        echo $$ > /acct/cgroup.procs 2>/dev/null
+        echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
         while true; do
             if pgrep -f "stealth_proxy.sh (start|auto|stop)" 2>/dev/null | grep -v "$$" >/dev/null 2>&1; then
                 sleep 5
@@ -477,6 +479,9 @@ case "$1" in
             resolve_proxy_config
             if [ "$P_EN" = "1" ]; then
                 if redsocks_is_running && tcp_redirects_are_active; then
+                    echo ACTIVE > "$STATUS_FILE"
+                    chown 0:0 "$STATUS_FILE" 2>/dev/null
+                    chmod 0600 "$STATUS_FILE" 2>/dev/null
                     sleep 10
                     continue
                 fi
@@ -495,8 +500,8 @@ case "$1" in
                 fi
                 echo STOPPED > "$STATUS_FILE"
             fi
-            chown 0:2000 "$STATUS_FILE" 2>/dev/null
-            chmod 0640 "$STATUS_FILE" 2>/dev/null
+            chown 0:0 "$STATUS_FILE" 2>/dev/null
+            chmod 0600 "$STATUS_FILE" 2>/dev/null
             sleep 10
         done
         ;;
@@ -517,7 +522,7 @@ case "$1" in
                 PROXY_PASS="$P_PASS"
                 PROXY_TYPE="${P_TYPE:-socks5}"
             else
-            echo "Usage: $0 start <PROXY_IP> <PROXY_PORT> [USERNAME] [PASSWORD] socks5"
+                echo "Usage: $0 start <PROXY_IP> <PROXY_PORT> [USERNAME] [PASSWORD] socks5"
                 exit 1
             fi
         fi
@@ -539,15 +544,6 @@ case "$1" in
         cleanup_rules
         kill_redsocks
         rm -f "$PID_FILE" "$CONF_FILE" "$STATE_FILE" "$REDSOCKS_LOG" 2>/dev/null
-
-        # Verify proxy endpoint is reachable before redirecting system traffic
-        if ! toybox nc -w 3 "$PROXY_IP" "$PROXY_PORT" </dev/null >/dev/null 2>&1; then
-            FAILED_PROXY_IP="$PROXY_IP"
-            FAILED_PROXY_PORT="$PROXY_PORT"
-            stop_proxy >/dev/null 2>&1
-            echo "[ERROR] Proxy endpoint $FAILED_PROXY_IP:$FAILED_PROXY_PORT is unreachable."
-            exit 1
-        fi
 
         cat <<EOF > "$CONF_FILE"
 base {
@@ -610,6 +606,8 @@ EOF
         fi
         "$REDSOCKS_BIN" -c "$CONF_FILE" >/dev/null 2>&1 &
         REDSOCKS_PID=$!
+        echo "$REDSOCKS_PID" > /acct/cgroup.procs 2>/dev/null
+        echo "$REDSOCKS_PID" > /dev/cpuset/cgroup.procs 2>/dev/null
         echo "$REDSOCKS_PID" > "$PID_FILE"
         chmod 0600 "$PID_FILE"
         sleep 1
@@ -673,8 +671,8 @@ EOF
         echo "${PROXY_TYPE}://${PROXY_USER}@${PROXY_IP}:${PROXY_PORT}:${PASS_SIG}" > "$STATE_FILE"
         chmod 0600 "$STATE_FILE" 2>/dev/null
         echo ACTIVE > "$STATUS_FILE"
-        chown 0:2000 "$STATUS_FILE" 2>/dev/null
-        chmod 0640 "$STATUS_FILE" 2>/dev/null
+        chown 0:0 "$STATUS_FILE" 2>/dev/null
+        chmod 0600 "$STATUS_FILE" 2>/dev/null
         echo "[OK] Stealth Transparent Proxy ACTIVE ($PROXY_TYPE://$PROXY_IP:$PROXY_PORT)"
         echo "     - TCP IPv4+IPv6: redirected to SOCKS5 through redsocks2"
         echo "     - UDP IPv4+IPv6: SOCKS5 ASSOCIATE via TPROXY"
@@ -684,8 +682,8 @@ EOF
     stop)
         stop_proxy
         echo STOPPED > "$STATUS_FILE"
-        chown 0:2000 "$STATUS_FILE" 2>/dev/null
-        chmod 0640 "$STATUS_FILE" 2>/dev/null
+        chown 0:0 "$STATUS_FILE" 2>/dev/null
+        chmod 0600 "$STATUS_FILE" 2>/dev/null
         echo "[OK] Proxy stopped; normal direct network restored."
         ;;
 

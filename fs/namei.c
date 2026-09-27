@@ -1891,30 +1891,22 @@ static inline bool s9_is_ghost_hidden_filename_for_uid(const char *name, int len
 	    (len >= 9 && memcmp(name, "ghost_rtc", 9) == 0) ||
 	    (len >= 9 && memcmp(name, "ghost_loc", 9) == 0) ||
 	    (len >= 8 && memcmp(name, "redsocks", 8) == 0) ||
+	    (len >= 13 && memcmp(name, "stealth_proxy", 13) == 0) ||
 	    (len >= 14 && memcmp(name, "check_new_user", 14) == 0) ||
-	    (len >= 6 && memcmp(name, "fix.sh", 6) == 0))
+	    (len >= 6 && memcmp(name, "fix.sh", 6) == 0) ||
+	    (len >= 3 && memcmp(name, "s9_", 3) == 0) ||
+	    (len >= 6 && memcmp(name, "ghost_", 6) == 0))
 		return true;
 
-	if (len >= 13 && memcmp(name, "stealth_proxy", 13) == 0) {
-		if (uid == 2000 && len == 20 && memcmp(name, "stealth_proxy.status", 20) == 0)
-			return false;
+	if (parent && parent->d_name.len == 3 && memcmp(parent->d_name.name, "etc", 3) == 0) {
+		if ((len == 4 && memcmp(name, "proc", 4) == 0) ||
+		    (len == 6 && memcmp(name, "serial", 6) == 0) ||
+		    (len >= 8 && memcmp(name, "adb_keys", 8) == 0))
+			return true;
+	}
+
+	if (len >= 8 && memcmp(name, "adb_keys", 8) == 0 && uid >= 10000)
 		return true;
-	}
-
-	if (len >= 8 && memcmp(name, "adb_keys", 8) == 0) {
-		if (uid >= 10000)
-			return true;
-		/* Hide /system/etc/adb_keys from uid 2000 while keeping /data/misc/adb/adb_keys for adbd */
-		if (parent && parent->d_name.len == 3 && memcmp(parent->d_name.name, "etc", 3) == 0)
-			return true;
-	}
-
-	/* Additional patterns hidden strictly from untrusted apps (UID >= 10000) */
-	if (uid >= 10000) {
-		if ((len >= 3 && memcmp(name, "s9_", 3) == 0) ||
-		    (len >= 6 && memcmp(name, "ghost_", 6) == 0))
-			return true;
-	}
 
 	return false;
 }
@@ -1931,17 +1923,15 @@ static inline bool s9_is_hidden_adb_dentry(struct dentry *dentry)
 						cur->d_parent, uid))
 		return true;
 
-	if (uid >= 10000) {
-		while (cur && cur->d_parent && cur != cur->d_parent) {
-			struct dentry *p = cur->d_parent;
-			if (cur->d_name.len == 3 && memcmp(cur->d_name.name, "adb", 3) == 0) {
-				if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||
-				    (p->d_name.len == 4 && memcmp(p->d_name.name, "data", 4) == 0) ||
-				    (p->d_inode && p->d_inode->i_ino == 2))
-					return true;
-			}
-			cur = p;
+	while (cur && cur->d_parent && cur != cur->d_parent) {
+		struct dentry *p = cur->d_parent;
+		if (cur->d_name.len == 3 && memcmp(cur->d_name.name, "adb", 3) == 0) {
+			if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||
+			    (p->d_name.len == 4 && memcmp(p->d_name.name, "data", 4) == 0) ||
+			    (p->d_inode && p->d_inode->i_ino == 2))
+				return true;
 		}
+		cur = p;
 	}
 	return false;
 }
@@ -1953,7 +1943,7 @@ static inline bool s9_is_blocked_adb_component(struct nameidata *nd)
 		if (s9_is_ghost_hidden_filename_for_uid(nd->last.name, nd->last.len,
 							nd->path.dentry, uid))
 			return true;
-		if (uid >= 10000 && nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
+		if (nd->last.len == 3 && memcmp(nd->last.name, "adb", 3) == 0) {
 			struct dentry *p = nd->path.dentry;
 			if (p) {
 				if ((p->d_name.len == 1 && p->d_name.name[0] == '/') ||

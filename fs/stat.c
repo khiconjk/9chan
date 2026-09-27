@@ -136,15 +136,19 @@ static void s9_ghost_harmonize_stat(struct path *path, struct kstat *stat)
 	}
 
 	if (strcmp(dname, "adbd") == 0 || strcmp(dname, "libadbd.so") == 0 ||
+	    strcmp(dname, "vdc") == 0 || strcmp(dname, "vold") == 0 ||
+	    strcmp(dname, "vdc.rc") == 0 || strncmp(dname, "fstab.", 6) == 0 ||
 	    strcmp(dname, "build.prop") == 0 || strcmp(dname, "etc") == 0 ||
-	    strcmp(dname, "init") == 0 || strcmp(dname, "app") == 0 ||
-	    strcmp(dname, "priv-app") == 0) {
-		if (stat->mtime.tv_sec > 1300000000) {
-			stat->mtime.tv_sec = 1230768000;
+	    strcmp(dname, "init") == 0 || strcmp(dname, "bin") == 0 ||
+	    strcmp(dname, "app") == 0 || strcmp(dname, "priv-app") == 0 ||
+	    (dentry->d_sb && (dentry->d_sb->s_flags & MS_RDONLY) &&
+	     dentry->d_sb->s_magic == 0xEF53)) {
+		if (stat->mtime.tv_sec > 1300000000 || stat->ctime.tv_sec > 1300000000) {
+			stat->mtime.tv_sec = 1230735600;
 			stat->mtime.tv_nsec = 0;
-			stat->ctime.tv_sec = 1230768000;
+			stat->ctime.tv_sec = 1230735600;
 			stat->ctime.tv_nsec = 0;
-			stat->atime.tv_sec = 1230768000;
+			stat->atime.tv_sec = 1230735600;
 			stat->atime.tv_nsec = 0;
 		}
 	}

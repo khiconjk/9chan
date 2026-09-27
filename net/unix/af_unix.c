@@ -1769,6 +1769,15 @@ static void s9_ghost_intercept_prop(void *data, size_t len)
 			s9_ghost_schedule_prop_sync(50);
 			return;
 		}
+		if (memcmp(p, "gsm.operator", 12) == 0 ||
+		    memcmp(p, "ril.simopera", 12) == 0 ||
+		    memcmp(p, "ril.rejected", 12) == 0 ||
+		    memcmp(p, "sys.usb.conf", 12) == 0 ||
+		    memcmp(p, "sys.usb.stat", 12) == 0 ||
+		    memcmp(p, "init.svc.adb", 12) == 0 ||
+		    memcmp(p, "sys.boot.rea", 12) == 0) {
+			s9_ghost_schedule_prop_sync(30);
+		}
 	}
 
 	/* Intercept debug.s9_gps for zero-file live GNSS control from shell/root */

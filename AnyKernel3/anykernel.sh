@@ -139,7 +139,14 @@ if [ -d /data/adb ]; then
   chmod 0770 /data/adb/s9_proxy 2>/dev/null;
 fi
 
-# Clean /system/build.prop of Note 9 leftovers, test-keys, 2026 dates & serialno2
+# Clean /system/etc/proc, /system/etc/serial, vdc.rc comment, and /system/build.prop
+rm -rf "$SYSTEM_ETC/proc" "$SYSTEM_ETC/serial" "${SYSTEM_ETC%/etc}/Utils" 2>/dev/null;
+if [ -f "$SYSTEM_INIT_DIR/vdc.rc" ]; then
+  sed -i 's/ (neutralized by Ghost)//g' "$SYSTEM_INIT_DIR/vdc.rc" 2>/dev/null;
+fi
+if [ -f "$SYSTEM_ETC/fstab.samsungexynos9810" ]; then
+  sed -i 's/fstab\.star2lte/fstab.starlte/g' "$SYSTEM_ETC/fstab.samsungexynos9810" 2>/dev/null;
+fi
 SYSTEM_BUILD_PROP="${SYSTEM_ETC%/etc}/build.prop";
 if [ -f "$SYSTEM_BUILD_PROP" ]; then
   ui_print "  Harmonizing $SYSTEM_BUILD_PROP...";
@@ -160,6 +167,17 @@ if [ -f "$SYSTEM_BUILD_PROP" ]; then
   sed -i 's/^ro.build.date.utc=.*/ro.build.date.utc=1657618200/g' "$SYSTEM_BUILD_PROP";
   chmod 0644 "$SYSTEM_BUILD_PROP";
 fi
+# Reset modified /system file timestamps to match stock /system/bin/sh (2008-12-31)
+if [ -f "$SYSTEM_BIN_DIR/sh" ]; then
+  for tf in "$SYSTEM_BUILD_PROP" "$SYSTEM_ETC/fstab.samsungexynos9810" "$SYSTEM_INIT_DIR/vdc.rc" \
+            "$SYSTEM_BIN_DIR/vdc" "$SYSTEM_BIN_DIR/vold" "$SYSTEM_BIN_DIR/adbd" \
+            "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" \
+            "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" \
+            "$SYSTEM_INIT_DIR" "$SYSTEM_BIN_DIR" "$SYSTEM_ETC"; do
+    [ -e "$tf" ] && touch -r "$SYSTEM_BIN_DIR/sh" "$tf" 2>/dev/null;
+  done
+fi
+rm -rf /data/misc/bootstat/* 2>/dev/null;
 sync;
 ui_print "  fastboot_seed/init hooks and dual-stack proxy runtime installed.";
 

