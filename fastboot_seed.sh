@@ -258,11 +258,15 @@ sync_ghost_identity_stores() {
         fi
     fi
 
-    # 1. Pre-provision & sync settings_ssaid.xml and settings_secure.xml (Android 10 SSAID & android_id store)
+    # 1. Pre-provision & sync settings_ssaid.xml, settings_secure.xml & wifi_p2p_device_name
     if [ -n "$G_AID" ]; then
         UKEY1=$(echo -n "UKEY1_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
         UKEY2=$(echo -n "UKEY2_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
         UKEY="${UKEY1}${UKEY2}"
+        AID4=$(echo "$G_AID" | cut -c1-4)
+        [ -z "$AID4" ] && AID4="s9gh"
+        P2P_NAME="Android_${AID4}"
+
         if [ ! -f /data/system/users/0/settings_ssaid.xml ]; then
             cat << EOF > /data/system/users/0/settings_ssaid.xml
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
@@ -275,6 +279,14 @@ EOF
             sed -i "/name=\"userkey\"/s/value=\"[^\"]*\"/value=\"${UKEY}\"/g; /name=\"userkey\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${UKEY}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
             sed -i "/name=\"1000\"/s/value=\"[^\"]*\"/value=\"${G_AID}\"/g; /name=\"1000\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${G_AID}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
         fi
+
+        # Remove stale app SSAID entries when AID changed so SettingsProvider recalculates with new userkey
+        LAST_AID=$(cat /data/system/.last_pchanger_aid 2>/dev/null)
+        if [ "$LAST_AID" != "$G_AID" ]; then
+            sed -i '/package="com\.shopee\.vn"/d; /package="com\.ss\.android\.ugc\.trill"/d; /package="com\.zhiliaoapp\.musically"/d; /com\.shopee\.vn/d; /com\.ss\.android\.ugc\.trill/d; /com\.zhiliaoapp\.musically/d' /data/system/users/0/settings_ssaid.xml 2>/dev/null
+            echo "$G_AID" > /data/system/.last_pchanger_aid 2>/dev/null
+            chmod 0600 /data/system/.last_pchanger_aid 2>/dev/null
+        fi
         chown 1000:1000 /data/system/users/0/settings_ssaid.xml 2>/dev/null
         chmod 0600 /data/system/users/0/settings_ssaid.xml 2>/dev/null
 
@@ -286,6 +298,17 @@ EOF
             fi
             chown 1000:1000 /data/system/users/0/settings_secure.xml 2>/dev/null
             chmod 0600 /data/system/users/0/settings_secure.xml 2>/dev/null
+        fi
+
+        if [ -f /data/system/users/0/settings_global.xml ]; then
+            if grep -q 'name="wifi_p2p_device_name"' /data/system/users/0/settings_global.xml 2>/dev/null; then
+                sed -i "s|name=\"wifi_p2p_device_name\" value=\"[^\"]*\"|name=\"wifi_p2p_device_name\" value=\"${P2P_NAME}\"|g" /data/system/users/0/settings_global.xml 2>/dev/null
+                sed -i "s|name=\"wifi_p2p_device_name\" defaultValue=\"[^\"]*\"|name=\"wifi_p2p_device_name\" defaultValue=\"${P2P_NAME}\"|g" /data/system/users/0/settings_global.xml 2>/dev/null
+            else
+                sed -i "s|</settings>|  <setting id=\"9985\" name=\"wifi_p2p_device_name\" value=\"${P2P_NAME}\" package=\"android\" defaultValue=\"${P2P_NAME}\" defaultSysSet=\"true\" />\n</settings>|g" /data/system/users/0/settings_global.xml 2>/dev/null
+            fi
+            chown 1000:1000 /data/system/users/0/settings_global.xml 2>/dev/null
+            chmod 0600 /data/system/users/0/settings_global.xml 2>/dev/null
         fi
     fi
 
