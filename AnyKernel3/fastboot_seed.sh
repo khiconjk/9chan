@@ -236,23 +236,53 @@ sync_ghost_identity_stores() {
         setprop ro.gsf.id "$G_GSF" 2>/dev/null
     fi
 
+    G_WIFI_MAC=$(grep -E '^wifi_mac=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    G_BT_MAC=$(grep -E '^bt_mac=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+
     # Enforce global Wi-Fi MAC without randomization
     settings put global wifi_connected_mac_randomization_enabled 0 2>/dev/null
+    if [ -n "$G_WIFI_MAC" ]; then
+        mkdir -p /efs/wifi /data/vendor/conn 2>/dev/null
+        echo "$G_WIFI_MAC" > /efs/wifi/.mac.info 2>/dev/null
+        echo "$G_WIFI_MAC" > /efs/wifi/.mac.cob 2>/dev/null
+        echo "$G_WIFI_MAC" > /data/vendor/conn/.mac.info 2>/dev/null
+        chmod 0664 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
+        chown 1000:1010 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
+        if [ -f /data/misc/wifi/WifiConfigStore.xml ]; then
+            sed -i 's|<int name="MacRandomizationSetting" value="1" />|<int name="MacRandomizationSetting" value="0" />|g' /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+            sed -i "s|<MacAddress name=\"RandomizedMacAddress\">[^<]*</MacAddress>|<MacAddress name=\"RandomizedMacAddress\">${G_WIFI_MAC}</MacAddress>|g" /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+        fi
+    fi
 
-    # 1. Pre-provision settings_ssaid.xml (Android 10 per-app SSAID store)
-    if [ -n "$G_AID" ] && [ ! -f /data/system/users/0/settings_ssaid.xml ]; then
+    # 1. Pre-provision & sync settings_ssaid.xml and settings_secure.xml (Android 10 SSAID & android_id store)
+    if [ -n "$G_AID" ]; then
         UKEY1=$(echo -n "UKEY1_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
         UKEY2=$(echo -n "UKEY2_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
         UKEY="${UKEY1}${UKEY2}"
-        cat << EOF > /data/system/users/0/settings_ssaid.xml
+        if [ ! -f /data/system/users/0/settings_ssaid.xml ]; then
+            cat << EOF > /data/system/users/0/settings_ssaid.xml
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <settings version="1">
   <setting id="0" name="userkey" value="${UKEY}" package="android" defaultValue="${UKEY}" defaultSysSet="true" tag="null" />
   <setting id="1" name="1000" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" tag="null" />
 </settings>
 EOF
+        else
+            sed -i "/name=\"userkey\"/s/value=\"[^\"]*\"/value=\"${UKEY}\"/g; /name=\"userkey\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${UKEY}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
+            sed -i "/name=\"1000\"/s/value=\"[^\"]*\"/value=\"${G_AID}\"/g; /name=\"1000\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${G_AID}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
+        fi
         chown 1000:1000 /data/system/users/0/settings_ssaid.xml 2>/dev/null
         chmod 0600 /data/system/users/0/settings_ssaid.xml 2>/dev/null
+
+        if [ -f /data/system/users/0/settings_secure.xml ]; then
+            if grep -q 'name="android_id"' /data/system/users/0/settings_secure.xml 2>/dev/null; then
+                sed -i "/name=\"android_id\"/s/value=\"[^\"]*\"/value=\"${G_AID}\"/g; /name=\"android_id\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${G_AID}\"/g" /data/system/users/0/settings_secure.xml 2>/dev/null
+            else
+                sed -i "s|</settings>|  <setting id=\"9988\" name=\"android_id\" value=\"${G_AID}\" package=\"android\" defaultValue=\"${G_AID}\" defaultSysSet=\"true\" />\n</settings>|g" /data/system/users/0/settings_secure.xml 2>/dev/null
+            fi
+            chown 1000:1000 /data/system/users/0/settings_secure.xml 2>/dev/null
+            chmod 0600 /data/system/users/0/settings_secure.xml 2>/dev/null
+        fi
     fi
 
     # 2. Provision gservices.db (GSF 64-bit ID) and clean Accounts History Debug_table if sqlite3 is available
@@ -461,10 +491,27 @@ scatter_package_install_times() {
     done
 }
 
+ensure_usb_adb_alive() {
+    if ! pidof adbd >/dev/null 2>&1; then
+        start adbd 2>/dev/null
+        sleep 0.2
+    fi
+    if [ "$(cat /sys/class/android_usb/android0/enable 2>/dev/null)" != "1" ] || ! grep -q "adb" /sys/class/android_usb/android0/functions 2>/dev/null; then
+        echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null
+        echo 0x6860 > /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null
+        echo 0x04E8 > /sys/kernel/config/usb_gadget/g1/idVendor 2>/dev/null
+        echo mtp,acm,adb > /sys/class/android_usb/android0/functions 2>/dev/null
+        echo 0 > /sys/kernel/config/usb_gadget/g1/bDeviceClass 2>/dev/null
+        echo 10c00000.dwc3 > /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null
+        echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null
+    fi
+}
+
 # Retire the old arbitrary root-script handoff.
 rm -f /data/local/tmp/fix.sh /data/local/tmp/fix.sh.disabled /data/local/tmp/check_new_user.sh 2>/dev/null
 
 if [ "$1" = "--fix" ]; then
+    ensure_usb_adb_alive
     provision_direct_boot_dirs
     sync_ghost_identity_stores
     sync_stealth_proxy
@@ -473,6 +520,7 @@ if [ "$1" = "--fix" ]; then
 fi
 
 if [ "$1" = "--boot-completed" ]; then
+    ensure_usb_adb_alive
     locksettings set-disabled true 2>/dev/null
     settings put global device_provisioned 1 2>/dev/null
     settings put secure user_setup_complete 1 2>/dev/null
@@ -498,6 +546,7 @@ if [ "$1" = "--boot-completed" ]; then
     echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null
     echo 512 > /sys/block/sda/queue/read_ahead_kb 2>/dev/null
     echo reload > /proc/s9_serial 2>/dev/null
+    ensure_usb_adb_alive
     sync_ghost_identity_stores
     sanitize_packages_and_timezone
     sync_stealth_proxy
@@ -527,6 +576,7 @@ if [ "$1" = "--boot-completed" ]; then
         echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
         for t in 5 10 15 20 30 45 60 90; do
             sleep $t
+            ensure_usb_adb_alive
             sync_persistent_clock
             sanitize_packages_and_timezone
             settings put global device_provisioned 1 2>/dev/null
@@ -538,6 +588,7 @@ if [ "$1" = "--boot-completed" ]; then
             if [ -f /proc/s9_serial ]; then
                 echo reload > /proc/s9_serial 2>/dev/null
             fi
+            ensure_usb_adb_alive
             if [ "$t" = "5" ] || [ "$t" = "10" ] || [ "$t" = "20" ]; then
                 for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
                     if [ -x "$sp" ] || [ -f "$sp" ]; then
@@ -592,7 +643,7 @@ if [ ! -f /data/system/users/0/settings_global.xml ] || [ ! -d /data/dalvik-cach
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <settings version="182">
   <setting id="1" name="device_provisioned" value="1" package="android" defaultValue="1" defaultSysSet="true" />
-  <setting id="2" name="adb_enabled" value="1" package="android" defaultValue="1" defaultSysSet="true" />
+  <setting id="2" name="adb_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
   <setting id="3" name="stay_on_while_plugged_in" value="7" package="android" defaultValue="7" defaultSysSet="true" />
   <setting id="4" name="window_animation_scale" value="0.0" package="android" defaultValue="0.0" defaultSysSet="true" />
   <setting id="5" name="transition_animation_scale" value="0.0" package="android" defaultValue="0.0" defaultSysSet="true" />
@@ -644,6 +695,11 @@ EOF
     chmod 600 /data/system/users/0/settings_*.xml 2>/dev/null
     chown 1000:1000 /data/system/users/0/settings_*.xml 2>/dev/null
     chcon u:object_r:system_data_file:s0 /data/data 2>/dev/null
+fi
+
+if [ -f /data/system/users/0/settings_global.xml ]; then
+    sed -i '/name="adb_enabled"/s/value="[^"]*"/value="0"/g; /name="adb_enabled"/s/defaultValue="[^"]*"/defaultValue="0"/g' /data/system/users/0/settings_global.xml 2>/dev/null
+    sed -i '/name="development_settings_enabled"/s/value="[^"]*"/value="0"/g; /name="development_settings_enabled"/s/defaultValue="[^"]*"/defaultValue="0"/g' /data/system/users/0/settings_global.xml 2>/dev/null
 fi
 
 sync_ghost_identity_stores

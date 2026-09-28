@@ -24,6 +24,7 @@ for f in \
   net/unix/af_unix.c \
   AnyKernel3/anykernel.sh \
   AnyKernel3/init.fix_storage.rc \
+  AnyKernel3/init.samsungexynos9810.usb.rc \
   AnyKernel3/fastboot_seed.sh \
   AnyKernel3/stealth_proxy.sh \
   AnyKernel3/redsocks_patched \

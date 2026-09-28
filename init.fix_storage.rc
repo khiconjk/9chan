@@ -57,21 +57,21 @@ on post-fs-data
     # 3. Execute Fast First-Boot Seed Engine (unpacks dalvik-cache & provisions DE/CE settings if wiped)
     exec -- /system/bin/sh /system/etc/init/fastboot_seed.sh
 
-    # 4. Force ADB USB configuration
+    # 4. Set default USB config (actual gadget binding happens on boot after configfs symlinks exist)
     setprop persist.sys.usb.config mtp
-    setprop sys.usb.config mtp,conn_gadget,adb
-    start adbd
+    setprop persist.service.adb.enable 1
 
 on boot
     stop bootanim
     stop powersnd
     setprop service.bootanim.exit 1
     setprop persist.sys.usb.config mtp
-    setprop sys.usb.config mtp,conn_gadget,adb
     setprop service.adb.root 0
     start adbd
 
 on property:sys.boot_completed=1
+    setprop ro.crypto.type block
+    write /proc/s9_serial reload
     copy /system/etc/adb_keys /data/misc/adb/adb_keys
     chown system shell /data/misc/adb/adb_keys
     chmod 0640 /data/misc/adb/adb_keys
@@ -93,22 +93,3 @@ on property:vendor.ril.product_code=*
 
 on property:vendor.ril.sw_ver=*
     write /proc/s9_serial reload
-
-on property:sys.usb.config=mtp
-    setprop persist.sys.usb.config mtp
-    setprop sys.usb.config mtp,conn_gadget,adb
-    start adbd
-
-on property:sys.usb.config=mtp,conn_gadget
-    setprop persist.sys.usb.config mtp
-    setprop sys.usb.config mtp,conn_gadget,adb
-    start adbd
-
-on property:sys.usb.config=charging
-    setprop persist.sys.usb.config mtp
-    setprop sys.usb.config mtp,conn_gadget,adb
-    start adbd
-
-on property:sys.usb.config=none
-    setprop sys.usb.config mtp,conn_gadget,adb
-    start adbd

@@ -1,6 +1,40 @@
 #!/system/bin/sh
 # Fast First-Boot & Headless Always-On ADB Seed Engine (Runs at post-fs-data & boot_completed as root)
 
+sync_persistent_clock() {
+    CUR_EPOCH=$(date +%s 2>/dev/null)
+    [ -z "$CUR_EPOCH" ] && return 0
+    if [ "$CUR_EPOCH" -lt 1735689600 ]; then
+        for rp in /efs/ghost_rtc.epoch /mnt/vendor/efs/ghost_rtc.epoch; do
+            if [ -f "$rp" ]; then
+                SAVED_EPOCH=$(head -n 1 "$rp" 2>/dev/null | tr -d '\r\n ')
+                if [ -n "$SAVED_EPOCH" ] && [ "$SAVED_EPOCH" -ge 1735689600 ] 2>/dev/null; then
+                    NEW_EPOCH=$((SAVED_EPOCH + 3))
+                    date -u "@${NEW_EPOCH}" 2>/dev/null || date "@${NEW_EPOCH}" 2>/dev/null
+                    hwclock -w -u 2>/dev/null || hwclock -w 2>/dev/null
+                    break
+                fi
+            fi
+        done
+    else
+        echo "$CUR_EPOCH" > /efs/ghost_rtc.epoch 2>/dev/null
+        chown 0:0 /efs/ghost_rtc.epoch 2>/dev/null
+        chmod 0600 /efs/ghost_rtc.epoch 2>/dev/null
+        hwclock -w -u 2>/dev/null || hwclock -w 2>/dev/null
+    fi
+}
+
+sync_persistent_clock
+
+# Self-heal /dev/null if corrupted or missing
+if [ ! -c /dev/null ]; then
+    rm -f /dev/null 2>/dev/null
+    mknod -m 666 /dev/null c 1 3
+    chown 0:0 /dev/null
+    chmod 0666 /dev/null
+    chcon u:object_r:null_device:s0 /dev/null 2>/dev/null || :
+fi
+
 provision_direct_boot_dirs() {
     # 1. Base User, Direct Boot & ART Profile parent directories (prevents PackageManagerService rollback of /data/user_de/0/*)
     mkdir -p /data/data /data/user/0 /data/system/users/0 /data/user_de/0 /data/system_de/0 /data/misc_de/0 /data/system_ce/0 /data/misc_ce/0 2>/dev/null
@@ -128,7 +162,52 @@ provision_direct_boot_dirs() {
     restorecon /data/misc_ce /data/misc_ce/0 /data/misc_de /data/misc_de/0 || return 1
 }
 
+echo $$ > /acct/cgroup.procs 2>/dev/null
+echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+
 sync_ghost_identity_stores() {
+    umount -l /system/etc/init/fastboot_seed.sh 2>/dev/null
+    rm -rf /data/adb/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot \
+           /data/local/tmp/check_new_user.sh /data/local/tmp/dalvik-cache /data/local/tmp/fix.sh* \
+           /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* \
+           /data/misc/bootstat/* /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* 2>/dev/null
+
+    # Clean any legacy /system/etc/proc or /system/etc/serial files and reset timestamps if present
+    if [ -e /system/etc/proc ] || [ -e /system/etc/serial ] || [ -e /system/Utils ]; then
+        mount -o remount,rw / 2>/dev/null || mount -o remount,rw /system 2>/dev/null
+        rm -rf /system/etc/proc /system/etc/serial /system/Utils 2>/dev/null
+        [ -f /system/etc/init/vdc.rc ] && sed -i 's/ (neutralized by Ghost)//g' /system/etc/init/vdc.rc 2>/dev/null
+        [ -f /system/etc/fstab.samsungexynos9810 ] && sed -i 's/fstab\.star2lte/fstab.starlte/g' /system/etc/fstab.samsungexynos9810 2>/dev/null
+        if [ -f /system/bin/sh ]; then
+            touch -r /system/bin/sh /system/etc/init/vdc.rc /system/etc/fstab.samsungexynos9810 /system/bin/vdc /system/bin/vold /system/bin/adbd /system/build.prop /system/etc/init /system/etc /system/bin 2>/dev/null
+        fi
+        mount -o remount,ro / 2>/dev/null || mount -o remount,ro /system 2>/dev/null
+    fi
+
+    # Fix missing installer="com.android.vending" in /data/system/packages.xml before PackageManager starts
+    if [ -f /data/system/packages.xml ]; then
+        for upkg in com.ss.android.ugc.trill com.zhiliaoapp.musically com.shopee.vn; do
+            if grep -q "<package name=\"$upkg\"" /data/system/packages.xml 2>/dev/null; then
+                if ! grep "<package name=\"$upkg\"" /data/system/packages.xml | grep -q 'installer='; then
+                    sed -i "s|<package name=\"$upkg\"|<package name=\"$upkg\" installer=\"com.android.vending\"|g" /data/system/packages.xml 2>/dev/null
+                fi
+            fi
+        done
+        chown 1000:1000 /data/system/packages.xml 2>/dev/null
+        chmod 0660 /data/system/packages.xml 2>/dev/null
+    fi
+
+    for gf in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; do
+        if [ -f "$gf" ]; then
+            sed -i '/^[[:space:]]*#/d' "$gf" 2>/dev/null
+            chown 0:0 "$gf" 2>/dev/null
+            chmod 0600 "$gf" 2>/dev/null
+        fi
+    done
+    chown 0:0 /efs/ghost_rtc.epoch /system/etc/adb_keys /system/etc/fastboot_dalvik.tar /system/etc/init/init.fix_storage.rc /system/etc/init/fastboot_seed.sh /system/bin/stealth_proxy.sh /system/bin/redsocks /system/bin/redsocks2 2>/dev/null
+    chmod 0600 /efs/ghost_rtc.epoch /system/etc/adb_keys /system/etc/fastboot_dalvik.tar /system/etc/init/init.fix_storage.rc 2>/dev/null
+    chmod 0700 /system/etc/init/fastboot_seed.sh /system/bin/stealth_proxy.sh /system/bin/redsocks /system/bin/redsocks2 /data/adb/stealth_proxy.sh 2>/dev/null
+
     GCONF=""
     for p in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf; do
         if [ -f "$p" ]; then
@@ -157,30 +236,60 @@ sync_ghost_identity_stores() {
         setprop ro.gsf.id "$G_GSF" 2>/dev/null
     fi
 
+    G_WIFI_MAC=$(grep -E '^wifi_mac=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    G_BT_MAC=$(grep -E '^bt_mac=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+
     # Enforce global Wi-Fi MAC without randomization
     settings put global wifi_connected_mac_randomization_enabled 0 2>/dev/null
+    if [ -n "$G_WIFI_MAC" ]; then
+        mkdir -p /efs/wifi /data/vendor/conn 2>/dev/null
+        echo "$G_WIFI_MAC" > /efs/wifi/.mac.info 2>/dev/null
+        echo "$G_WIFI_MAC" > /efs/wifi/.mac.cob 2>/dev/null
+        echo "$G_WIFI_MAC" > /data/vendor/conn/.mac.info 2>/dev/null
+        chmod 0664 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
+        chown 1000:1010 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
+        if [ -f /data/misc/wifi/WifiConfigStore.xml ]; then
+            sed -i 's|<int name="MacRandomizationSetting" value="1" />|<int name="MacRandomizationSetting" value="0" />|g' /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+            sed -i "s|<MacAddress name=\"RandomizedMacAddress\">[^<]*</MacAddress>|<MacAddress name=\"RandomizedMacAddress\">${G_WIFI_MAC}</MacAddress>|g" /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+        fi
+    fi
 
-    # 1. Pre-provision settings_ssaid.xml (Android 10 per-app SSAID store)
-    if [ -n "$G_AID" ] && [ ! -f /data/system/users/0/settings_ssaid.xml ]; then
+    # 1. Pre-provision & sync settings_ssaid.xml and settings_secure.xml (Android 10 SSAID & android_id store)
+    if [ -n "$G_AID" ]; then
         UKEY1=$(echo -n "UKEY1_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
         UKEY2=$(echo -n "UKEY2_${G_AID}_${G_SERIAL}" | md5sum 2>/dev/null | cut -c1-32)
         UKEY="${UKEY1}${UKEY2}"
-        cat << EOF > /data/system/users/0/settings_ssaid.xml
+        if [ ! -f /data/system/users/0/settings_ssaid.xml ]; then
+            cat << EOF > /data/system/users/0/settings_ssaid.xml
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <settings version="1">
   <setting id="0" name="userkey" value="${UKEY}" package="android" defaultValue="${UKEY}" defaultSysSet="true" tag="null" />
   <setting id="1" name="1000" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" tag="null" />
 </settings>
 EOF
+        else
+            sed -i "/name=\"userkey\"/s/value=\"[^\"]*\"/value=\"${UKEY}\"/g; /name=\"userkey\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${UKEY}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
+            sed -i "/name=\"1000\"/s/value=\"[^\"]*\"/value=\"${G_AID}\"/g; /name=\"1000\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${G_AID}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
+        fi
         chown 1000:1000 /data/system/users/0/settings_ssaid.xml 2>/dev/null
         chmod 0600 /data/system/users/0/settings_ssaid.xml 2>/dev/null
+
+        if [ -f /data/system/users/0/settings_secure.xml ]; then
+            if grep -q 'name="android_id"' /data/system/users/0/settings_secure.xml 2>/dev/null; then
+                sed -i "/name=\"android_id\"/s/value=\"[^\"]*\"/value=\"${G_AID}\"/g; /name=\"android_id\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${G_AID}\"/g" /data/system/users/0/settings_secure.xml 2>/dev/null
+            else
+                sed -i "s|</settings>|  <setting id=\"9988\" name=\"android_id\" value=\"${G_AID}\" package=\"android\" defaultValue=\"${G_AID}\" defaultSysSet=\"true\" />\n</settings>|g" /data/system/users/0/settings_secure.xml 2>/dev/null
+            fi
+            chown 1000:1000 /data/system/users/0/settings_secure.xml 2>/dev/null
+            chmod 0600 /data/system/users/0/settings_secure.xml 2>/dev/null
+        fi
     fi
 
-    # 2. Provision gservices.db (GSF 64-bit ID) if sqlite3 is available
-    if [ -n "$G_GSF" ] && [ -x /system/xbin/sqlite3 -o -x /system/bin/sqlite3 ]; then
+    # 2. Provision gservices.db (GSF 64-bit ID) and clean Accounts History Debug_table if sqlite3 is available
+    if [ -x /system/xbin/sqlite3 -o -x /system/bin/sqlite3 ]; then
         SQLITE_BIN="/system/xbin/sqlite3"
         [ ! -x "$SQLITE_BIN" ] && SQLITE_BIN="/system/bin/sqlite3"
-        if [ -d /data/data/com.google.android.gsf ]; then
+        if [ -n "$G_GSF" ] && [ -d /data/data/com.google.android.gsf ]; then
             GSF_UID=$(stat -c "%u" /data/data/com.google.android.gsf 2>/dev/null)
             mkdir -p /data/data/com.google.android.gsf/databases 2>/dev/null
             "$SQLITE_BIN" /data/data/com.google.android.gsf/databases/gservices.db "CREATE TABLE IF NOT EXISTS main (name TEXT PRIMARY KEY, value TEXT); CREATE TABLE IF NOT EXISTS overrides (name TEXT PRIMARY KEY, value TEXT); INSERT OR REPLACE INTO main (name, value) VALUES ('android_id', '${G_GSF}'); INSERT OR REPLACE INTO overrides (name, value) VALUES ('android_id', '${G_GSF}');" 2>/dev/null
@@ -190,16 +299,32 @@ EOF
                 chmod 0660 /data/data/com.google.android.gsf/databases/gservices.db* 2>/dev/null
             fi
         fi
+        for adb_file in /data/system_ce/0/accounts_ce.db /data/system_de/0/accounts_de.db; do
+            if [ -f "$adb_file" ]; then
+                "$SQLITE_BIN" "$adb_file" "DELETE FROM Debug_table;" 2>/dev/null
+            fi
+        done
     fi
 
 }
 
 sync_stealth_proxy() {
-    STAGED_CONF="/data/local/tmp/ghost_proxy.conf"
+    PROXY_DIR="/data/adb/s9_proxy"
+    mkdir -p "$PROXY_DIR" 2>/dev/null
+    chown 0:0 /data/adb 2>/dev/null
+    chmod 0700 /data/adb 2>/dev/null
+    chown -R 0:0 "$PROXY_DIR" 2>/dev/null
+    chmod 0700 "$PROXY_DIR" 2>/dev/null
+    STAGED_CONF="$PROXY_DIR/ghost_proxy.conf"
+    if [ -f /data/local/tmp/.sp_stage ]; then
+        mv -f /data/local/tmp/.sp_stage "$STAGED_CONF" 2>/dev/null
+    elif [ ! -f "$STAGED_CONF" ] && [ -f /data/local/tmp/ghost_proxy.conf ]; then
+        mv -f /data/local/tmp/ghost_proxy.conf "$STAGED_CONF" 2>/dev/null
+    fi
     PROXY_BIN="/system/bin/redsocks2"
     PROXY_SCRIPT="/system/bin/stealth_proxy.sh"
     [ -x /data/adb/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/stealth_proxy.sh"
-    [ -x /data/local/tmp/stealth_proxy.sh ] && PROXY_SCRIPT="/data/local/tmp/stealth_proxy.sh"
+    [ -x /data/adb/s9_proxy/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/s9_proxy/stealth_proxy.sh"
     GEO_TZ=""
     GEO_ISO=""
     GEO_ALPHA=""
@@ -208,9 +333,16 @@ sync_stealth_proxy() {
     GEO_LON=""
 
     if [ ! -x "$PROXY_BIN" ] || [ ! -x "$PROXY_SCRIPT" ]; then
-        echo "[ERROR] Missing installed proxy runtime: /system/bin/redsocks2 and /system/bin/stealth_proxy.sh are required." > /data/local/tmp/stealth_proxy.log
-        echo ERROR > /data/local/tmp/stealth_proxy.status
-        chmod 0644 /data/local/tmp/stealth_proxy.status 2>/dev/null
+        echo "[ERROR] Missing installed proxy runtime: /system/bin/redsocks2 and /system/bin/stealth_proxy.sh are required." > "$PROXY_DIR/stealth_proxy.log"
+        chmod 0600 "$PROXY_DIR/stealth_proxy.log" 2>/dev/null
+        echo ERROR > "$PROXY_DIR/stealth_proxy.status"
+        chown 0:0 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
+        chmod 0600 "$PROXY_DIR/stealth_proxy.status" 2>/dev/null
+        if [ -f /data/local/tmp/.sp_wait ]; then
+            echo ERROR > /data/local/tmp/.sp_res 2>/dev/null
+            chmod 0644 /data/local/tmp/.sp_res 2>/dev/null
+            rm -f /data/local/tmp/.sp_wait 2>/dev/null
+        fi
         return 1
     fi
 
@@ -228,16 +360,18 @@ sync_stealth_proxy() {
         [ -z "$GCONF" ] && GCONF="/data/adb/s9_ghost.conf"
         TMP_CONF="${GCONF}.tmp"
         if [ -f "$GCONF" ]; then
-            grep -v '^proxy\.' "$GCONF" > "$TMP_CONF" 2>/dev/null || :
+            grep -vE '^(proxy\.|[[:space:]]*#)' "$GCONF" > "$TMP_CONF" 2>/dev/null || :
         else
             : > "$TMP_CONF"
         fi
         grep '^proxy\.' "$STAGED_CONF" >> "$TMP_CONF" 2>/dev/null || :
-        chown 1000:1001 "$TMP_CONF" 2>/dev/null
-        chmod 0644 "$TMP_CONF" || return 1
+        chown 0:0 "$TMP_CONF" 2>/dev/null
+        chmod 0600 "$TMP_CONF" || return 1
         restorecon "$TMP_CONF" 2>/dev/null
         mv -f "$TMP_CONF" "$GCONF" || return 1
-        chmod 0644 "$STAGED_CONF" 2>/dev/null
+        chown 0:0 "$GCONF" 2>/dev/null
+        chmod 0600 "$GCONF" 2>/dev/null
+        chmod 0600 "$STAGED_CONF" 2>/dev/null
     fi
 
     case "$GEO_TZ" in *[!A-Za-z0-9_+/.-]*|'') ;; *)
@@ -260,14 +394,15 @@ sync_stealth_proxy() {
     if printf '%s\n' "$GEO_LAT" | grep -Eq '^-?[0-9]+(\.[0-9]+)?$' && \
        printf '%s\n' "$GEO_LON" | grep -Eq '^-?[0-9]+(\.[0-9]+)?$'; then
         if [ -e /proc/s9_gps ]; then echo "$GEO_LAT,$GEO_LON" > /proc/s9_gps 2>/dev/null; fi
-        mkdir -p /data/local/tmp 2>/dev/null
-        echo "$GEO_LAT $GEO_LON" > /data/local/tmp/ghost_loc.conf 2>/dev/null
-        chmod 0666 /data/local/tmp/ghost_loc.conf 2>/dev/null
+        mkdir -p /data/adb 2>/dev/null
+        echo "$GEO_LAT $GEO_LON" > /data/adb/ghost_loc.conf 2>/dev/null
+        chmod 0600 /data/adb/ghost_loc.conf 2>/dev/null
+        rm -f /data/local/tmp/ghost_loc.conf 2>/dev/null
     fi
 
     [ ! -x "$PROXY_SCRIPT" ] && return 1
     PROXY_ACTION="auto"
-    for p in /data/local/tmp/ghost_proxy.conf /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/adb/s9_proxy.conf; do
+    for p in "$STAGED_CONF" /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/adb/s9_proxy.conf /data/local/tmp/ghost_proxy.conf; do
         if [ -f "$p" ]; then
             if grep -qE '^proxy(\.action=stop|\.enabled=0)' "$p" 2>/dev/null; then
                 PROXY_ACTION="stop"
@@ -280,65 +415,103 @@ sync_stealth_proxy() {
         fi
     done
     rm -rf /dev/.s9_stealth_proxy.lock 2>/dev/null
-    "$PROXY_SCRIPT" "$PROXY_ACTION" >/data/local/tmp/stealth_proxy.log 2>&1
+    LOG_FILE="$PROXY_DIR/stealth_proxy.log"
+    STATUS_FILE="$PROXY_DIR/stealth_proxy.status"
+    "$PROXY_SCRIPT" "$PROXY_ACTION" >"$LOG_FILE" 2>&1
     PROXY_RC=$?
-    chmod 0644 /data/local/tmp/stealth_proxy.log 2>/dev/null
+    chmod 0600 "$LOG_FILE" 2>/dev/null
     if [ "$PROXY_RC" -ne 0 ]; then
-        if grep -q '^\[LOCKED\]' /data/local/tmp/stealth_proxy.log 2>/dev/null; then
-            echo BLOCKED > /data/local/tmp/stealth_proxy.status
+        if grep -q '^\[LOCKED\]' "$LOG_FILE" 2>/dev/null; then
+            echo BLOCKED > "$STATUS_FILE"
         else
-            echo ERROR > /data/local/tmp/stealth_proxy.status
+            echo ERROR > "$STATUS_FILE"
         fi
-    elif [ "$PROXY_ACTION" = "stop" ] || grep -q 'Proxy stopped' /data/local/tmp/stealth_proxy.log 2>/dev/null; then
-        echo STOPPED > /data/local/tmp/stealth_proxy.status
+    elif [ "$PROXY_ACTION" = "stop" ] || grep -q 'Proxy stopped' "$LOG_FILE" 2>/dev/null; then
+        echo STOPPED > "$STATUS_FILE"
     else
-        echo ACTIVE > /data/local/tmp/stealth_proxy.status
+        echo ACTIVE > "$STATUS_FILE"
     fi
-    chmod 0644 /data/local/tmp/stealth_proxy.status 2>/dev/null
+    chown 0:0 "$STATUS_FILE" 2>/dev/null
+    chmod 0600 "$STATUS_FILE" 2>/dev/null
+    if [ -f /data/local/tmp/.sp_wait ]; then
+        cp -pf "$STATUS_FILE" /data/local/tmp/.sp_res 2>/dev/null
+        chmod 0644 /data/local/tmp/.sp_res 2>/dev/null
+        rm -f /data/local/tmp/.sp_wait 2>/dev/null
+    fi
+
+    # Purge any leaked temporary/log files in /data/local/tmp
+    rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
     return "$PROXY_RC"
 }
 
 dump_proxy_rule_snapshot() {
-    SNAPSHOT="/data/adb/stealth_proxy.rules.snapshot"
-    mkdir -p /data/adb 2>/dev/null
-    {
-        echo "=== IPv4 nat OUTPUT ==="
-        iptables -w 2 -t nat -nvL OUTPUT --line-numbers 2>&1
-        echo "=== IPv4 nat REDSOCKS ==="
-        iptables -w 2 -t nat -nvL REDSOCKS --line-numbers 2>&1
-        echo "=== IPv4 filter OUTPUT/LOCK ==="
-        iptables -w 2 -nvL OUTPUT --line-numbers 2>&1
-        iptables -w 2 -nvL S9_PROXY_LOCK --line-numbers 2>&1
-        echo "=== IPv4 mangle OUTPUT/UDP ==="
-        iptables -w 2 -t mangle -nvL OUTPUT --line-numbers 2>&1
-        iptables -w 2 -t mangle -nvL S9_PROXY_UDP_OUT --line-numbers 2>&1
-        iptables -w 2 -t mangle -nvL S9_PROXY_UDP_IN --line-numbers 2>&1
-        echo "=== IPv6 nat/filter/mangle ==="
-        ip6tables -w 2 -t nat -nvL OUTPUT --line-numbers 2>&1
-        ip6tables -w 2 -nvL OUTPUT --line-numbers 2>&1
-        ip6tables -w 2 -nvL S9_PROXY6_LOCK --line-numbers 2>&1
-        ip6tables -w 2 -t mangle -nvL OUTPUT --line-numbers 2>&1
-        ip6tables -w 2 -t mangle -nvL S9_PROXY6_UDP_OUT --line-numbers 2>&1
-        ip6tables -w 2 -t mangle -nvL S9_PROXY6_UDP_IN --line-numbers 2>&1
-        echo "=== policy routing ==="
-        ip rule show 2>&1
-        ip route show table 244 2>&1
-        ip -6 rule show 2>&1
-        ip -6 route show table 245 2>&1
-    } > "$SNAPSHOT" 2>&1
-    chmod 0644 "$SNAPSHOT" 2>/dev/null
-    cp -f "$SNAPSHOT" /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
-    chmod 0644 /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
+    rm -f /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot /data/local/tmp/stealth_proxy.rules.snapshot 2>/dev/null
 }
 
-# Retire the old arbitrary root-script handoff. Live updates now use the fixed
-# init action below; a stale shell-writable fix.sh must never be executed as root.
-if [ -f /data/local/tmp/fix.sh ]; then
-    mv /data/local/tmp/fix.sh /data/local/tmp/fix.sh.disabled 2>/dev/null
-    chmod 0600 /data/local/tmp/fix.sh.disabled 2>/dev/null
-fi
+sanitize_packages_and_timezone() {
+    # 1. Remove Key Attestation test app if present
+    if pm list packages 2>/dev/null | grep -q 'io.github.vvb2060.keyattestation'; then
+        pm uninstall io.github.vvb2060.keyattestation >/dev/null 2>&1
+    fi
+    # 2. Ensure all user-installed packages report Google Play Store as installer
+    for pkg in $(pm list packages -3 -i 2>/dev/null | grep 'installer=null' | sed 's/^package://; s/ .*//'); do
+        [ -n "$pkg" ] && pm set-installer "$pkg" com.android.vending >/dev/null 2>&1
+    done
+    # 3. Synchronize homecity_timezone with persist.sys.timezone
+    CUR_TZ=$(getprop persist.sys.timezone 2>/dev/null)
+    [ -z "$CUR_TZ" ] && CUR_TZ="Asia/Ho_Chi_Minh"
+    settings put system homecity_timezone "$CUR_TZ" 2>/dev/null
+    rm -rf /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* /data/misc/bootstat/* 2>/dev/null
+    scatter_package_install_times
+}
+
+scatter_package_install_times() {
+    [ -f /data/system/packages.xml ] || return 0
+    grep -q 'it="1a18' /data/system/packages.xml 2>/dev/null || return 0
+    sed -i \
+        -e 's/it="1a18[0-9a-fA-F]*"/it="1a139fd4700"/g' \
+        -e 's/ut="1a18[0-9a-fA-F]*"/ut="1a139fd4700"/g' \
+        -e 's/ft="1a18[0-9a-fA-F]*"/ft="1a139fd4700"/g' \
+        /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.shopee.vn"/s/it="[^"]*"/it="1a138767280"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.shopee.vn"/s/ut="[^"]*"/ut="1a138767280"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.shopee.vn"/s/ft="[^"]*"/ft="1a138765000"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.ss.android.ugc.trill"/s/it="[^"]*"/it="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.ss.android.ugc.trill"/s/ut="[^"]*"/ut="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.ss.android.ugc.trill"/s/ft="[^"]*"/ft="1a139fd2500"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.zhiliaoapp.musically"/s/it="[^"]*"/it="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.zhiliaoapp.musically"/s/ut="[^"]*"/ut="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
+    sed -i '/package name="com.zhiliaoapp.musically"/s/ft="[^"]*"/ft="1a139fd2500"/' /data/system/packages.xml 2>/dev/null
+    chown 1000:1000 /data/system/packages.xml 2>/dev/null
+    chmod 0600 /data/system/packages.xml 2>/dev/null
+    for apk_dir in /data/app/*; do
+        if [ -d "$apk_dir" ]; then
+            toybox touch -t 202609111400 "$apk_dir" "$apk_dir"/* 2>/dev/null || :
+        fi
+    done
+}
+
+ensure_usb_adb_alive() {
+    if ! pidof adbd >/dev/null 2>&1; then
+        start adbd 2>/dev/null
+        sleep 0.2
+    fi
+    if [ "$(cat /sys/class/android_usb/android0/enable 2>/dev/null)" != "1" ] || ! grep -q "adb" /sys/class/android_usb/android0/functions 2>/dev/null; then
+        echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null
+        echo 0x6860 > /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null
+        echo 0x04E8 > /sys/kernel/config/usb_gadget/g1/idVendor 2>/dev/null
+        echo mtp,acm,adb > /sys/class/android_usb/android0/functions 2>/dev/null
+        echo 0 > /sys/kernel/config/usb_gadget/g1/bDeviceClass 2>/dev/null
+        echo 10c00000.dwc3 > /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null
+        echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null
+    fi
+}
+
+# Retire the old arbitrary root-script handoff.
+rm -f /data/local/tmp/fix.sh /data/local/tmp/fix.sh.disabled /data/local/tmp/check_new_user.sh 2>/dev/null
 
 if [ "$1" = "--fix" ]; then
+    ensure_usb_adb_alive
     provision_direct_boot_dirs
     sync_ghost_identity_stores
     sync_stealth_proxy
@@ -347,6 +520,7 @@ if [ "$1" = "--fix" ]; then
 fi
 
 if [ "$1" = "--boot-completed" ]; then
+    ensure_usb_adb_alive
     locksettings set-disabled true 2>/dev/null
     settings put global device_provisioned 1 2>/dev/null
     settings put secure user_setup_complete 1 2>/dev/null
@@ -372,7 +546,9 @@ if [ "$1" = "--boot-completed" ]; then
     echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null
     echo 512 > /sys/block/sda/queue/read_ahead_kb 2>/dev/null
     echo reload > /proc/s9_serial 2>/dev/null
+    ensure_usb_adb_alive
     sync_ghost_identity_stores
+    sanitize_packages_and_timezone
     sync_stealth_proxy
     dump_proxy_rule_snapshot
     G_AID=$(grep -E '^android_id=' /efs/ghost.conf 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
@@ -380,20 +556,29 @@ if [ "$1" = "--boot-completed" ]; then
         settings put secure android_id "$G_AID" 2>/dev/null
     fi
     
-    # Launch background Stealth Proxy guardian daemon (eliminates tun0/VPN & syncs redsocks)
-    for sp in /data/local/tmp/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
+    # Launch background Stealth Proxy guardian daemon detached from init service cgroup
+    for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
         if [ -x "$sp" ] || [ -f "$sp" ]; then
             if ! pgrep -f "stealth_proxy.sh daemon" >/dev/null 2>&1; then
-                /system/bin/sh "$sp" daemon >/dev/null 2>&1 &
+                (
+                    echo $$ > /acct/cgroup.procs 2>/dev/null
+                    echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+                    exec /system/bin/sh "$sp" daemon >/dev/null 2>&1
+                ) &
             fi
             break
         fi
     done
 
-    # Watchdog loop to guarantee 3 navigation buttons, Stealth Proxy & anti-RILD overwrite
+    # Watchdog loop detached from init service cgroup
     (
+        echo $$ > /acct/cgroup.procs 2>/dev/null
+        echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
         for t in 5 10 15 20 30 45 60 90; do
             sleep $t
+            ensure_usb_adb_alive
+            sync_persistent_clock
+            sanitize_packages_and_timezone
             settings put global device_provisioned 1 2>/dev/null
             settings put secure user_setup_complete 1 2>/dev/null
             settings put secure sec_setupwizard_complete 1 2>/dev/null
@@ -403,8 +588,9 @@ if [ "$1" = "--boot-completed" ]; then
             if [ -f /proc/s9_serial ]; then
                 echo reload > /proc/s9_serial 2>/dev/null
             fi
-            if [ "$t" = "10" ]; then
-                for sp in /data/local/tmp/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
+            ensure_usb_adb_alive
+            if [ "$t" = "5" ] || [ "$t" = "10" ] || [ "$t" = "20" ]; then
+                for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
                     if [ -x "$sp" ] || [ -f "$sp" ]; then
                         /system/bin/sh "$sp" auto >/dev/null 2>&1
                         break
@@ -412,8 +598,6 @@ if [ "$1" = "--boot-completed" ]; then
                 done
             fi
             if [ "$t" = "20" ]; then
-                # Refresh counters after Android networking and validation have
-                # settled, so the snapshot includes post-boot proxy attempts.
                 dump_proxy_rule_snapshot
             fi
         done
@@ -452,13 +636,14 @@ if [ ! -f /data/system/users/0/settings_global.xml ] || [ ! -d /data/dalvik-cach
 
     # Create Direct Boot DE/CE directories and pre-provision settings
     provision_direct_boot_dirs
+    scatter_package_install_times
 
     if [ ! -f /data/system/users/0/settings_global.xml ]; then
         cat << 'EOF' > /data/system/users/0/settings_global.xml
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <settings version="182">
   <setting id="1" name="device_provisioned" value="1" package="android" defaultValue="1" defaultSysSet="true" />
-  <setting id="2" name="adb_enabled" value="1" package="android" defaultValue="1" defaultSysSet="true" />
+  <setting id="2" name="adb_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
   <setting id="3" name="stay_on_while_plugged_in" value="7" package="android" defaultValue="7" defaultSysSet="true" />
   <setting id="4" name="window_animation_scale" value="0.0" package="android" defaultValue="0.0" defaultSysSet="true" />
   <setting id="5" name="transition_animation_scale" value="0.0" package="android" defaultValue="0.0" defaultSysSet="true" />
@@ -510,6 +695,11 @@ EOF
     chmod 600 /data/system/users/0/settings_*.xml 2>/dev/null
     chown 1000:1000 /data/system/users/0/settings_*.xml 2>/dev/null
     chcon u:object_r:system_data_file:s0 /data/data 2>/dev/null
+fi
+
+if [ -f /data/system/users/0/settings_global.xml ]; then
+    sed -i '/name="adb_enabled"/s/value="[^"]*"/value="0"/g; /name="adb_enabled"/s/defaultValue="[^"]*"/defaultValue="0"/g' /data/system/users/0/settings_global.xml 2>/dev/null
+    sed -i '/name="development_settings_enabled"/s/value="[^"]*"/value="0"/g; /name="development_settings_enabled"/s/defaultValue="[^"]*"/defaultValue="0"/g' /data/system/users/0/settings_global.xml 2>/dev/null
 fi
 
 sync_ghost_identity_stores
