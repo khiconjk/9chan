@@ -172,17 +172,9 @@ sync_ghost_identity_stores() {
            /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* \
            /data/misc/bootstat/* /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* 2>/dev/null
 
-    # Clean any legacy /system/etc/proc or /system/etc/serial files and reset timestamps if present
-    if [ -e /system/etc/proc ] || [ -e /system/etc/serial ] || [ -e /system/Utils ]; then
-        mount -o remount,rw / 2>/dev/null || mount -o remount,rw /system 2>/dev/null
-        rm -rf /system/etc/proc /system/etc/serial /system/Utils 2>/dev/null
-        [ -f /system/etc/init/vdc.rc ] && sed -i 's/ (neutralized by Ghost)//g' /system/etc/init/vdc.rc 2>/dev/null
-        [ -f /system/etc/fstab.samsungexynos9810 ] && sed -i 's/fstab\.star2lte/fstab.starlte/g' /system/etc/fstab.samsungexynos9810 2>/dev/null
-        if [ -f /system/bin/sh ]; then
-            touch -r /system/bin/sh /system/etc/init/vdc.rc /system/etc/fstab.samsungexynos9810 /system/bin/vdc /system/bin/vold /system/bin/adbd /system/build.prop /system/etc/init /system/etc /system/bin 2>/dev/null
-        fi
-        mount -o remount,ro / 2>/dev/null || mount -o remount,ro /system 2>/dev/null
-    fi
+    # NOTE: Never remount / or /system read-write in Android OS (/dev/block/dm-0 is read-only at the block layer;
+    # unlinking/modifying files on dm-0 corrupts in-memory EXT4 dentries and triggers EXT4_lookup Kernel Panic).
+    # All /system cleanup is performed exclusively in TWRP Recovery directly on /dev/block/sda18.
 
     # Fix missing installer="com.android.vending" in /data/system/packages.xml before PackageManager starts
     if [ -f /data/system/packages.xml ]; then

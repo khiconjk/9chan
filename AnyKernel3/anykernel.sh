@@ -101,7 +101,7 @@ touch "$WRITE_TEST" 2>/dev/null || abort "System partition is not writable; Ghos
 rm -f "$WRITE_TEST";
 rm -f "$SYSTEM_INIT_DIR/fastboot_seed.sh.orig" "$SYSTEM_INIT_DIR/fastboot_seed.sh~" \
       "$SYSTEM_INIT_DIR/init.fix_storage.rc.orig" "$SYSTEM_INIT_DIR/init.fix_storage.rc~" \
-      "$SYSTEM_INIT_DIR/adb_always_on.rc" \
+      "$SYSTEM_INIT_DIR/adb_always_on.rc" "$SYSTEM_INIT_DIR/.usb_stealth_v2_done" \
       "$SYSTEM_BIN_DIR/stealth_proxy.sh.orig" "$SYSTEM_BIN_DIR/stealth_proxy.sh~" \
       "$SYSTEM_BIN_DIR/redsocks.orig" "$SYSTEM_BIN_DIR/redsocks~" \
       "$SYSTEM_BIN_DIR/redsocks2.orig" "$SYSTEM_BIN_DIR/redsocks2~" 2>/dev/null;
@@ -110,13 +110,12 @@ cp -pf "$AKHOME/init.fix_storage.rc" "$SYSTEM_INIT_DIR/init.fix_storage.rc" || a
 cp -pf "$AKHOME/stealth_proxy.sh" "$SYSTEM_BIN_DIR/stealth_proxy.sh" || abort "Failed to install stealth_proxy.sh.";
 cp -pf "$AKHOME/redsocks_patched" "$SYSTEM_BIN_DIR/redsocks" || abort "Failed to install redsocks.";
 cp -pf "$AKHOME/redsocks2_patched" "$SYSTEM_BIN_DIR/redsocks2" || abort "Failed to install dual-stack redsocks2.";
-echo 1 > "$SYSTEM_INIT_DIR/.usb_stealth_v2_done" 2>/dev/null;
-chown 0:0 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_INIT_DIR/.usb_stealth_v2_done" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
+chown 0:0 "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
 chmod 0755 "$SYSTEM_INIT_DIR/fastboot_seed.sh";
 chmod 0700 "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2";
-chmod 0644 "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_INIT_DIR/.usb_stealth_v2_done" 2>/dev/null;
+chmod 0644 "$SYSTEM_INIT_DIR/init.fix_storage.rc" 2>/dev/null;
 chmod 0600 "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
-restorecon "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_INIT_DIR/.usb_stealth_v2_done" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
+restorecon "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" "$SYSTEM_ETC/adb_keys" "$SYSTEM_ETC/fastboot_dalvik.tar" 2>/dev/null;
 
 # Clean stale bind-mount sources, snapshots, and world-readable files on /data and /efs
 mount /data 2>/dev/null || mount -t ext4 -o rw /dev/block/platform/11120000.ufs/by-name/USERDATA /data 2>/dev/null || true;
@@ -175,9 +174,9 @@ fi
 if [ -f "$SYSTEM_BIN_DIR/sh" ]; then
   for tf in "$SYSTEM_BUILD_PROP" "$SYSTEM_ETC/fstab.samsungexynos9810" "$SYSTEM_INIT_DIR/vdc.rc" \
             "$SYSTEM_BIN_DIR/vdc" "$SYSTEM_BIN_DIR/vold" "$SYSTEM_BIN_DIR/adbd" \
-            "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" "$SYSTEM_INIT_DIR/.usb_stealth_v2_done" \
+            "$SYSTEM_INIT_DIR/fastboot_seed.sh" "$SYSTEM_INIT_DIR/init.fix_storage.rc" \
             "$SYSTEM_BIN_DIR/stealth_proxy.sh" "$SYSTEM_BIN_DIR/redsocks" "$SYSTEM_BIN_DIR/redsocks2" \
-            "$SYSTEM_INIT_DIR" "$SYSTEM_BIN_DIR" "$SYSTEM_ETC"; do
+            "${SYSTEM_ETC%/etc}" "$SYSTEM_INIT_DIR" "$SYSTEM_BIN_DIR" "$SYSTEM_ETC"; do
     [ -e "$tf" ] && touch -r "$SYSTEM_BIN_DIR/sh" "$tf" 2>/dev/null;
   done
 fi
