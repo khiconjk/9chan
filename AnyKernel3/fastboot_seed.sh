@@ -176,18 +176,30 @@ sync_ghost_identity_stores() {
     # unlinking/modifying files on dm-0 corrupts in-memory EXT4 dentries and triggers EXT4_lookup Kernel Panic).
     # All /system cleanup is performed exclusively in TWRP Recovery directly on /dev/block/sda18.
 
-    # Fix missing installer="com.android.vending" in /data/system/packages.xml before PackageManager starts
-    if [ -f /data/system/packages.xml ]; then
-        for upkg in com.ss.android.ugc.trill com.zhiliaoapp.musically com.shopee.vn; do
-            if grep -q "<package name=\"$upkg\"" /data/system/packages.xml 2>/dev/null; then
-                if ! grep "<package name=\"$upkg\"" /data/system/packages.xml | grep -q 'installer='; then
-                    sed -i "s|<package name=\"$upkg\"|<package name=\"$upkg\" installer=\"com.android.vending\"|g" /data/system/packages.xml 2>/dev/null
-                fi
+    # Fix missing installer="com.android.vending" and sync fingerprint in /data/system/packages.xml before PackageManager starts
+    GHOST_FP_EARLY=""
+    for p in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; do
+        if [ -s "$p" ]; then
+            GHOST_FP_EARLY=$(sed -n 's/^ro\.build\.fingerprint=//p' "$p" 2>/dev/null | head -n 1 | tr -d '\r\n')
+            [ -n "$GHOST_FP_EARLY" ] && break
+        fi
+    done
+    for pxml in /data/system/packages.xml /data/system/packages-backup.xml; do
+        if [ -f "$pxml" ]; then
+            if [ -n "$GHOST_FP_EARLY" ]; then
+                sed -i "s|fingerprint=\"[^\"]*\"|fingerprint=\"$GHOST_FP_EARLY\"|g" "$pxml" 2>/dev/null
             fi
-        done
-        chown 1000:1000 /data/system/packages.xml 2>/dev/null
-        chmod 0660 /data/system/packages.xml 2>/dev/null
-    fi
+            for upkg in com.ss.android.ugc.trill com.zhiliaoapp.musically com.shopee.vn; do
+                if grep -q "<package name=\"$upkg\"" "$pxml" 2>/dev/null; then
+                    if ! grep "<package name=\"$upkg\"" "$pxml" | grep -q 'installer='; then
+                        sed -i "s|<package name=\"$upkg\"|<package name=\"$upkg\" installer=\"com.android.vending\"|g" "$pxml" 2>/dev/null
+                    fi
+                fi
+            done
+            chown 1000:1000 "$pxml" 2>/dev/null
+            chmod 0660 "$pxml" 2>/dev/null
+        fi
+    done
 
     for gf in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; do
         if [ -f "$gf" ]; then
@@ -196,9 +208,9 @@ sync_ghost_identity_stores() {
             chmod 0600 "$gf" 2>/dev/null
         fi
     done
-    chown 0:0 /efs/ghost_rtc.epoch /system/etc/adb_keys /system/etc/fastboot_dalvik.tar /system/etc/init/init.fix_storage.rc /system/etc/init/fastboot_seed.sh /system/bin/stealth_proxy.sh /system/bin/redsocks /system/bin/redsocks2 2>/dev/null
-    chmod 0600 /efs/ghost_rtc.epoch /system/etc/adb_keys /system/etc/fastboot_dalvik.tar /system/etc/init/init.fix_storage.rc 2>/dev/null
-    chmod 0700 /system/etc/init/fastboot_seed.sh /system/bin/stealth_proxy.sh /system/bin/redsocks /system/bin/redsocks2 /data/adb/stealth_proxy.sh 2>/dev/null
+    chown 0:0 /efs/ghost_rtc.epoch /data/adb/stealth_proxy.sh 2>/dev/null
+    chmod 0600 /efs/ghost_rtc.epoch 2>/dev/null
+    chmod 0700 /data/adb/stealth_proxy.sh 2>/dev/null
 
     GCONF=""
     for p in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf; do
