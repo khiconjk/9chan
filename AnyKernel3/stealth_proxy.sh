@@ -260,6 +260,8 @@ setup_socks5_udp_tproxy() {
     iptables -t mangle -A "$UDP_OUT_CHAIN" -d 192.168.0.0/16 -j RETURN || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp -d "$PROXY_IP" -j RETURN || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp --dport 53 -j RETURN || return 1
+    # Reject UDP port 443 (QUIC/HTTP3) so Google services instantly fallback to TCP HTTPS
+    iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp --dport 443 -j RETURN || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp -j MARK --set-xmark "$TPROXY_MARK/$TPROXY_MARK" || return 1
     while iptables -t mangle -D OUTPUT -p udp -j "$UDP_OUT_CHAIN" 2>/dev/null; do :; done
     iptables -t mangle -I OUTPUT 1 -p udp -j "$UDP_OUT_CHAIN" || return 1
@@ -285,6 +287,7 @@ setup_socks5_udp_tproxy() {
             ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p ipv6-icmp -m icmp6 --icmpv6-type "$icmp6_type" -j RETURN 2>/dev/null || :
         done
         ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp --dport 53 -j RETURN 2>/dev/null || :
+        ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp --dport 443 -j RETURN 2>/dev/null || :
         ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp -j MARK --set-xmark "$TPROXY6_MARK/$TPROXY6_MARK" 2>/dev/null || :
         while ip6tables -t mangle -D OUTPUT -p udp -j "$UDP6_OUT_CHAIN" 2>/dev/null; do :; done
         ip6tables -t mangle -I OUTPUT 1 -p udp -j "$UDP6_OUT_CHAIN" 2>/dev/null || :
@@ -545,6 +548,9 @@ case "$1" in
             exit 1
         fi
         kill_vpn_tun0
+        settings put global captive_portal_mode 0 2>/dev/null
+        settings put global captive_portal_detection_enabled 0 2>/dev/null
+        settings put global private_dns_mode off 2>/dev/null
         cleanup_rules
         kill_redsocks
         rm -f "$PID_FILE" "$CONF_FILE" "$STATE_FILE" 2>/dev/null
