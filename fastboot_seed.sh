@@ -171,6 +171,11 @@ sync_ghost_identity_stores() {
            /data/local/tmp/check_new_user.sh /data/local/tmp/dalvik-cache /data/local/tmp/fix.sh* \
            /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* \
            /data/misc/bootstat/* /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* 2>/dev/null
+    # Clean stale app Keystore certificates (UID >= 10000) & lock history
+    find /data/misc/keystore/user_0/ -type f -delete 2>/dev/null
+    chmod -R 0700 /efs/FactoryApp 2>/dev/null; chmod 0600 /efs/FactoryApp/* 2>/dev/null
+    chmod 0600 /proc/net/arp 2>/dev/null
+    sed -i '/name="plugin_lock_event_dump"/d' /data/system/users/0/settings_secure.xml 2>/dev/null
 
     # NOTE: Never remount / or /system read-write in Android OS (/dev/block/dm-0 is read-only at the block layer;
     # unlinking/modifying files on dm-0 corrupts in-memory EXT4 dentries and triggers EXT4_lookup Kernel Panic).
