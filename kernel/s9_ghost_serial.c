@@ -200,9 +200,59 @@ static void s9_generate_deterministic_profile(struct s9_serial_profile *p)
 	}
 	p->samsung_serial[10] = '\0';
 
-	/* 8. Full line for /efs/FactoryApp/serial_no */
+	/* 8. Dynamic RIL Barcode & Factory Dates */
+	snprintf(p->ril_barcode, sizeof(p->ril_barcode), "AGZ%07u", (u32)(seed2 % 10000000ULL));
+	snprintf(p->ril_mfg_date, sizeof(p->ril_mfg_date), "20180517");
+	snprintf(p->ril_rfcal_date, sizeof(p->ril_rfcal_date), "20180521");
 	snprintf(p->efs_serial_line, sizeof(p->efs_serial_line),
-		 "%s,20180517,AGZ0797860\n", p->samsung_serial);
+		 "%s,%s,%s\n", p->samsung_serial, p->ril_mfg_date, p->ril_barcode);
+
+	/* 9. Default Dynamic Widevine DRM ID */
+	{
+		static const char hex_chars[] = "0123456789abcdef";
+		u64 drm_seed = seed2;
+		for (i = 0; i < 32; i++) {
+			drm_seed = s9_mix64(drm_seed, 0x517cc1b727220a95ULL + i);
+			p->drm_id_bytes[i] = (u8)(drm_seed & 0xFF);
+			p->drm_id_hex[i * 2] = hex_chars[(p->drm_id_bytes[i] >> 4) & 0xF];
+			p->drm_id_hex[i * 2 + 1] = hex_chars[p->drm_id_bytes[i] & 0xF];
+		}
+		p->drm_id_hex[64] = '\0';
+		p->has_drm_id = true;
+	}
+
+	/* 10. Default Dynamic eMMC & UFS Storage Identifiers */
+	{
+		u32 psn = (u32)(seed2 & 0xFFFFFFFF);
+		u32 ufs_rand = (u32)((seed1 >> 16) & 0xFFFFF);
+
+		/* eMMC CID (Samsung JEDEC format: MID 0x15, CBX 0x01, OEM 0x00, DJ4U1E, PRV 0x08, PSN, MDT 0x026, CRC 0x01 = 32 hex chars) */
+		snprintf(p->emmc_cid, sizeof(p->emmc_cid),
+			 "150100444A3455314508%08X0261", psn);
+		p->has_emmc_cid = true;
+
+		snprintf(p->emmc_serial, sizeof(p->emmc_serial), "0x%08x\n", psn);
+		strlcpy(p->emmc_name, "DJ4U1E\n", sizeof(p->emmc_name));
+		strlcpy(p->emmc_manfid, "0x000015\n", sizeof(p->emmc_manfid));
+		strlcpy(p->emmc_oemid, "0x0100\n", sizeof(p->emmc_oemid));
+		strlcpy(p->emmc_date, "09/2020\n", sizeof(p->emmc_date));
+
+		/* UFS Serial & VPD Page 0x80 (12 bytes: 00 80 00 08 'F' 'D' c0 c1 c2 c3 c4 00) */
+		snprintf(p->ufs_serial, sizeof(p->ufs_serial), "FD%05X\n", ufs_rand);
+		p->ufs_vpd_pg80[0] = 0x00;
+		p->ufs_vpd_pg80[1] = 0x80;
+		p->ufs_vpd_pg80[2] = 0x00;
+		p->ufs_vpd_pg80[3] = 0x08;
+		p->ufs_vpd_pg80[4] = 'F';
+		p->ufs_vpd_pg80[5] = 'D';
+		snprintf((char *)&p->ufs_vpd_pg80[6], 6, "%05X", ufs_rand);
+		p->ufs_vpd_pg80[11] = '\0';
+		p->ufs_vpd_pg80_len = 12;
+
+		/* UFS WWID */
+		snprintf(p->ufs_wwid, sizeof(p->ufs_wwid), "eui.53414d53554e47%02X\n", (u8)(seed2 >> 32));
+		p->has_ufs_wwid = true;
+	}
 
 	p->active = true;
 }
@@ -212,6 +262,10 @@ static void s9_ghost_set_prop(const char *key, const char *val)
 	int i;
 	if (!key || !*key || !val)
 		return;
+
+	/* Never allow debuggable=1 to leak */
+	if (!strcmp(key, "ro.debuggable"))
+		val = "0";
 
 	for (i = 0; i < s9_ghost_prop_count; i++) {
 		if (!strcmp(s9_ghost_props[i].key, key)) {
@@ -326,13 +380,39 @@ static void s9_ghost_harmonize_properties(void)
 			if (strlen(raw_model) >= 4) {
 				char csc_buf[64];
 				char bb_buf[64];
-				if (strstr(raw_model, "F")) {
-					snprintf(csc_buf, sizeof(csc_buf), "%sOXMHFVB4", raw_model);
+				const char *conf_bb = s9_ghost_get_prop("gsm.version.baseband");
+				const char *conf_csc = s9_ghost_get_prop("ril.official_cscver");
+
+				if (conf_bb && *conf_bb) {
+					strlcpy(bb_buf, conf_bb, sizeof(bb_buf));
+				} else if (inc && *inc && strlen(inc) >= 8) {
+					strlcpy(bb_buf, inc, sizeof(bb_buf));
+					if (strstr(bb_buf, "KSU")) {
+						char *ksu = strstr(bb_buf, "KSU");
+						ksu[1] = 'O'; /* KOU */
+					}
+				} else if (strstr(raw_model, "F")) {
 					snprintf(bb_buf, sizeof(bb_buf), "%sXXUHFVB4", raw_model);
 				} else {
-					snprintf(csc_buf, sizeof(csc_buf), "%sOKR5FVG2", raw_model);
-					snprintf(bb_buf, sizeof(bb_buf), "%sKOU5FVA1", raw_model);
+					snprintf(bb_buf, sizeof(bb_buf), "%sKOU3DTC5", raw_model);
 				}
+
+				if (conf_csc && *conf_csc) {
+					strlcpy(csc_buf, conf_csc, sizeof(csc_buf));
+				} else if (inc && *inc && strlen(inc) >= 8) {
+					strlcpy(csc_buf, inc, sizeof(csc_buf));
+					if (strstr(csc_buf, "KSU")) {
+						char *ksu = strstr(csc_buf, "KSU");
+						ksu[0] = 'O';
+						ksu[1] = 'K';
+						ksu[2] = 'R'; /* OKR */
+					}
+				} else if (strstr(raw_model, "F")) {
+					snprintf(csc_buf, sizeof(csc_buf), "%sOXMHFVB4", raw_model);
+				} else {
+					snprintf(csc_buf, sizeof(csc_buf), "%sOKR3DTC5", raw_model);
+				}
+
 				s9_ghost_set_prop("ril.official_cscver", csc_buf);
 				s9_ghost_set_prop("ro.omc.build.version", csc_buf);
 				s9_ghost_set_prop("gsm.version.baseband", bb_buf);
@@ -466,11 +546,26 @@ static void s9_ghost_harmonize_properties(void)
 			sizeof(s9_active_serial_prof.samsung_serial));
 		snprintf(s9_active_serial_prof.efs_serial_line,
 			 sizeof(s9_active_serial_prof.efs_serial_line),
-			 "%s,20180517,AGZ0797860\n", s9_active_serial_prof.serialno);
+			 "%s,%s,%s\n", s9_active_serial_prof.samsung_serial,
+			 s9_active_serial_prof.ril_mfg_date[0] ? s9_active_serial_prof.ril_mfg_date : "20180517",
+			 s9_active_serial_prof.ril_barcode[0] ? s9_active_serial_prof.ril_barcode : "AGZ0797860");
 		s9_ghost_set_prop("ro.serialno", s9_active_serial_prof.serialno);
 		s9_ghost_set_prop("ro.boot.serialno", s9_active_serial_prof.serialno);
 		s9_ghost_set_prop("ril.serialnumber", s9_active_serial_prof.serialno);
 	}
+
+	/* 7b. Dynamic RIL Barcode, Factory Dates & Widevine DRM ID */
+	if (s9_active_serial_prof.ril_barcode[0])
+		s9_ghost_set_prop("ril.barcode", s9_active_serial_prof.ril_barcode);
+	if (s9_active_serial_prof.ril_mfg_date[0])
+		s9_ghost_set_prop("ril.manufacturedate", s9_active_serial_prof.ril_mfg_date);
+	if (s9_active_serial_prof.ril_rfcal_date[0])
+		s9_ghost_set_prop("ril.rfcal_date", s9_active_serial_prof.ril_rfcal_date);
+	if (s9_active_serial_prof.has_drm_id) {
+		s9_ghost_set_prop("ro.boot.drm.id", s9_active_serial_prof.drm_id_hex);
+		s9_ghost_set_prop("drm_id", s9_active_serial_prof.drm_id_hex);
+	}
+	s9_ghost_set_prop("ro.debuggable", "0");
 
 	/* 8. Telephony & Carrier harmonization (100% unified MCC/MNC across SIM, RIL & SecOperator) */
 	{
@@ -556,6 +651,90 @@ static void s9_ghost_harmonize_properties(void)
 			snprintf(epdg_buf, sizeof(epdg_buf), "%s_VN", c_name);
 			s9_ghost_set_prop("ril.epdg.currenMno", epdg_buf);
 		}
+	}
+
+	/* 9. Router Wi-Fi BSSID, Gateway ARP MAC, SSID & Local IP deterministic derivation */
+	{
+		static const u8 router_ouis[8][3] = {
+			{ 0xc8, 0x3a, 0x35 }, /* Tenda */
+			{ 0xdc, 0x71, 0x96 }, /* ZTE / Viettel */
+			{ 0xe4, 0x6f, 0x13 }, /* Huawei / VNPT */
+			{ 0xa4, 0x2b, 0x8c }, /* TP-Link */
+			{ 0x04, 0xd4, 0xc4 }, /* ASUS */
+			{ 0x78, 0x44, 0x76 }, /* Totolink */
+			{ 0x50, 0xc7, 0xbf }, /* TP-Link */
+			{ 0x28, 0xee, 0x52 }, /* TP-Link */
+		};
+		static const char *const ssid7_prefixes[8] = {
+			"VNPT_", "FPT_5", "Home_", "Wifi_",
+			"Viet_", "Cafe_", "Link_", "Net5_"
+		};
+		static const char hex_up[] = "0123456789ABCDEF";
+		u64 net_hash = 0x524F555445525339ULL;
+		int idx;
+		u8 oct;
+
+		for (idx = 0; s9_active_serial_prof.serialno[idx]; idx++) {
+			net_hash = s9_mix64(net_hash ^ (u8)s9_active_serial_prof.serialno[idx],
+					    0x9E3779B97F4A7C15ULL);
+		}
+
+		if (!s9_active_serial_prof.has_wifi_bssid) {
+			const u8 *oui = router_ouis[net_hash & 7];
+			s9_active_serial_prof.wifi_bssid_bytes[0] = oui[0];
+			s9_active_serial_prof.wifi_bssid_bytes[1] = oui[1];
+			s9_active_serial_prof.wifi_bssid_bytes[2] = oui[2];
+			s9_active_serial_prof.wifi_bssid_bytes[3] = (u8)((net_hash >> 8) & 0xFF);
+			s9_active_serial_prof.wifi_bssid_bytes[4] = (u8)((net_hash >> 16) & 0xFF);
+			s9_active_serial_prof.wifi_bssid_bytes[5] = (u8)(((net_hash >> 24) & 0xFE) | 0x02);
+			snprintf(s9_active_serial_prof.wifi_bssid_str,
+				 sizeof(s9_active_serial_prof.wifi_bssid_str),
+				 "%02x:%02x:%02x:%02x:%02x:%02x",
+				 s9_active_serial_prof.wifi_bssid_bytes[0],
+				 s9_active_serial_prof.wifi_bssid_bytes[1],
+				 s9_active_serial_prof.wifi_bssid_bytes[2],
+				 s9_active_serial_prof.wifi_bssid_bytes[3],
+				 s9_active_serial_prof.wifi_bssid_bytes[4],
+				 s9_active_serial_prof.wifi_bssid_bytes[5]);
+			s9_active_serial_prof.has_wifi_bssid = true;
+		}
+
+		/* Gateway LAN ARP MAC shares router OUI + board ID, differs in low bits */
+		memcpy(s9_active_serial_prof.wifi_arp_mac_bytes,
+		       s9_active_serial_prof.wifi_bssid_bytes, 6);
+		s9_active_serial_prof.wifi_arp_mac_bytes[5] ^= 0x03;
+		snprintf(s9_active_serial_prof.wifi_arp_mac_str,
+			 sizeof(s9_active_serial_prof.wifi_arp_mac_str),
+			 "%02x:%02x:%02x:%02x:%02x:%02x",
+			 s9_active_serial_prof.wifi_arp_mac_bytes[0],
+			 s9_active_serial_prof.wifi_arp_mac_bytes[1],
+			 s9_active_serial_prof.wifi_arp_mac_bytes[2],
+			 s9_active_serial_prof.wifi_arp_mac_bytes[3],
+			 s9_active_serial_prof.wifi_arp_mac_bytes[4],
+			 s9_active_serial_prof.wifi_arp_mac_bytes[5]);
+
+		/* 7-char SSID (exact length match for "Thu Tra" in-place Parcel spoofing) */
+		snprintf(s9_active_serial_prof.wifi_ssid7_str,
+			 sizeof(s9_active_serial_prof.wifi_ssid7_str),
+			 "%s%c%c",
+			 ssid7_prefixes[(net_hash >> 3) & 7],
+			 hex_up[(net_hash >> 12) & 0xF],
+			 hex_up[(net_hash >> 20) & 0xF]);
+		if (!s9_active_serial_prof.has_wifi_ssid) {
+			strlcpy(s9_active_serial_prof.wifi_ssid_str,
+				s9_active_serial_prof.wifi_ssid7_str,
+				sizeof(s9_active_serial_prof.wifi_ssid_str));
+			s9_active_serial_prof.has_wifi_ssid = true;
+		}
+
+		/* Deterministic 3-digit IPv4 host octet (101..248, never 183) */
+		oct = (u8)(101 + ((net_hash >> 32) % 148));
+		if (oct == 183)
+			oct = 184;
+		s9_active_serial_prof.wifi_ip_octet = oct;
+		snprintf(s9_active_serial_prof.wifi_ip_octet_str,
+			 sizeof(s9_active_serial_prof.wifi_ip_octet_str),
+			 "%03u", (unsigned int)oct);
 	}
 }
 
@@ -672,8 +851,33 @@ static void s9_load_config_file(void)
 					} else if ((!strcasecmp(key, "samsung_serial") || !strcasecmp(key, "efs.samsung_serial")) && strlen(val) >= 8) {
 						strlcpy(s9_active_serial_prof.samsung_serial, val, sizeof(s9_active_serial_prof.samsung_serial));
 						snprintf(s9_active_serial_prof.efs_serial_line, sizeof(s9_active_serial_prof.efs_serial_line),
-							 "%s,20180517,AGZ0797860\n", s9_active_serial_prof.samsung_serial);
+							 "%s,%s,%s\n", s9_active_serial_prof.samsung_serial,
+							 s9_active_serial_prof.ril_mfg_date[0] ? s9_active_serial_prof.ril_mfg_date : "20180517",
+							 s9_active_serial_prof.ril_barcode[0] ? s9_active_serial_prof.ril_barcode : "AGZ0797860");
 						s9_ghost_set_prop("ril.serialnumber", val);
+					} else if ((!strcasecmp(key, "barcode") || !strcasecmp(key, "ril.barcode") || !strcasecmp(key, "efs.barcode")) && strlen(val) >= 6) {
+						strlcpy(s9_active_serial_prof.ril_barcode, val, sizeof(s9_active_serial_prof.ril_barcode));
+						s9_ghost_set_prop("ril.barcode", val);
+					} else if (!strcasecmp(key, "ril.manufacturedate") || !strcasecmp(key, "mfg_date")) {
+						strlcpy(s9_active_serial_prof.ril_mfg_date, val, sizeof(s9_active_serial_prof.ril_mfg_date));
+						s9_ghost_set_prop("ril.manufacturedate", val);
+					} else if (!strcasecmp(key, "ril.rfcal_date") || !strcasecmp(key, "rfcal_date")) {
+						strlcpy(s9_active_serial_prof.ril_rfcal_date, val, sizeof(s9_active_serial_prof.ril_rfcal_date));
+						s9_ghost_set_prop("ril.rfcal_date", val);
+					} else if ((!strcasecmp(key, "drm_id") || !strcasecmp(key, "ro.boot.drm.id") || !strcasecmp(key, "drm.id")) && strlen(val) >= 32) {
+						strlcpy(s9_active_serial_prof.drm_id_hex, val, sizeof(s9_active_serial_prof.drm_id_hex));
+						s9_active_serial_prof.has_drm_id = true;
+						{
+							int hi, lo, bi;
+							for (bi = 0; bi < 32 && val[bi * 2] && val[bi * 2 + 1]; bi++) {
+								hi = hex_to_bin(val[bi * 2]);
+								lo = hex_to_bin(val[bi * 2 + 1]);
+								if (hi >= 0 && lo >= 0)
+									s9_active_serial_prof.drm_id_bytes[bi] = (u8)((hi << 4) | lo);
+							}
+						}
+						s9_ghost_set_prop("ro.boot.drm.id", val);
+						s9_ghost_set_prop("drm_id", val);
 					} else if ((!strcasecmp(key, "imei") || !strcasecmp(key, "efs.imei")) && strlen(val) >= 14) {
 						strlcpy(s9_active_serial_prof.imei, val, sizeof(s9_active_serial_prof.imei));
 					} else if ((!strcasecmp(key, "imsi") || !strcasecmp(key, "efs.imsi")) && strlen(val) >= 10) {
@@ -687,6 +891,13 @@ static void s9_load_config_file(void)
 					} else if (!strcasecmp(key, "bt_mac") || !strcasecmp(key, "bluetooth_mac") || !strcasecmp(key, "bt.mac")) {
 						strlcpy(s9_active_serial_prof.bt_mac_str, val, sizeof(s9_active_serial_prof.bt_mac_str));
 						s9_active_serial_prof.has_bt_mac = true;
+					} else if (!strcasecmp(key, "wifi.bssid") || !strcasecmp(key, "wifi_bssid") || !strcasecmp(key, "router.mac") || !strcasecmp(key, "gateway.mac")) {
+						strlcpy(s9_active_serial_prof.wifi_bssid_str, val, sizeof(s9_active_serial_prof.wifi_bssid_str));
+						if (s9_parse_mac_address(val, s9_active_serial_prof.wifi_bssid_bytes))
+							s9_active_serial_prof.has_wifi_bssid = true;
+					} else if (!strcasecmp(key, "wifi.ssid") || !strcasecmp(key, "wifi_ssid")) {
+						strlcpy(s9_active_serial_prof.wifi_ssid_str, val, sizeof(s9_active_serial_prof.wifi_ssid_str));
+						s9_active_serial_prof.has_wifi_ssid = true;
 					} else if (!strcasecmp(key, "ghost_gps.enabled") || !strcasecmp(key, "gps.enabled")) {
 						s9_ghost_set_prop("__ghost_gps_enabled", val);
 					} else if (!strcasecmp(key, "ghost_gps.lat") || !strcasecmp(key, "gps.lat")) {
@@ -708,6 +919,30 @@ static void s9_load_config_file(void)
 							s9_ghost_set_prop("gsm.operator.iso-country", "");
 							s9_ghost_set_prop("gsm.sim.operator.iso-country", "");
 							s9_ghost_set_prop("ril.simoperator", "");
+						}
+					} else if (!strcasecmp(key, "storage.cid") || !strcasecmp(key, "emmc.cid") || !strcasecmp(key, "emmc_cid")) {
+						if (strlen(val) >= 32) {
+							strlcpy(s9_active_serial_prof.emmc_cid, val, sizeof(s9_active_serial_prof.emmc_cid));
+							s9_active_serial_prof.has_emmc_cid = true;
+							snprintf(s9_active_serial_prof.emmc_serial, sizeof(s9_active_serial_prof.emmc_serial),
+								 "0x%.8s\n", val + 20);
+						}
+					} else if (!strcasecmp(key, "storage.ufs_serial") || !strcasecmp(key, "ufs_serial")) {
+						if (strlen(val) >= 4) {
+							strlcpy(s9_active_serial_prof.ufs_serial, val, sizeof(s9_active_serial_prof.ufs_serial));
+							s9_active_serial_prof.ufs_vpd_pg80[0] = 0x00;
+							s9_active_serial_prof.ufs_vpd_pg80[1] = 0x80;
+							s9_active_serial_prof.ufs_vpd_pg80[2] = 0x00;
+							s9_active_serial_prof.ufs_vpd_pg80[3] = 0x08;
+							memset(&s9_active_serial_prof.ufs_vpd_pg80[4], 0, 8);
+							strncpy((char *)&s9_active_serial_prof.ufs_vpd_pg80[4], val, 7);
+							s9_active_serial_prof.ufs_vpd_pg80_len = 12;
+						}
+					} else if (!strcasecmp(key, "storage.wwid") || !strcasecmp(key, "ufs_wwid")) {
+						if (strlen(val) >= 16) {
+							snprintf(s9_active_serial_prof.ufs_wwid, sizeof(s9_active_serial_prof.ufs_wwid),
+								 "%s\n", val);
+							s9_active_serial_prof.has_ufs_wwid = true;
 						}
 					} else {
 						/* 2. Generic system properties (ro.*, gsm.*, persist.*, sys.*, etc.) */
@@ -885,6 +1120,57 @@ void s9_ghost_get_active_serial(char *out, size_t len)
 }
 EXPORT_SYMBOL(s9_ghost_get_active_serial);
 
+bool s9_ghost_get_ap_serial(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ok = false;
+	s9_ensure_init();
+	if (!out || len == 0)
+		return false;
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.ap_serial[0]) {
+		strlcpy(out, s9_active_serial_prof.ap_serial, len);
+		ok = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ok;
+}
+EXPORT_SYMBOL(s9_ghost_get_ap_serial);
+
+bool s9_ghost_get_samsung_serial(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ok = false;
+	s9_ensure_init();
+	if (!out || len == 0)
+		return false;
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.samsung_serial[0]) {
+		strlcpy(out, s9_active_serial_prof.samsung_serial, len);
+		ok = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ok;
+}
+EXPORT_SYMBOL(s9_ghost_get_samsung_serial);
+
+bool s9_ghost_get_lot_id2(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ok = false;
+	s9_ensure_init();
+	if (!out || len == 0)
+		return false;
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.lot_id2[0]) {
+		strlcpy(out, s9_active_serial_prof.lot_id2, len);
+		ok = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ok;
+}
+EXPORT_SYMBOL(s9_ghost_get_lot_id2);
+
 bool s9_ghost_is_cloaked_efs_path(const struct path *path)
 {
 	const char *dname;
@@ -911,7 +1197,9 @@ bool s9_ghost_is_cloaked_efs_path(const struct path *path)
 		    strcmp(dname, "samsung_serial") &&
 		    strcmp(dname, "imei") &&
 		    strcmp(dname, "imsi") &&
-		    strcmp(dname, "meid"))
+		    strcmp(dname, "meid") &&
+		    strcmp(dname, "barcode") &&
+		    strcmp(dname, "barcode.dat"))
 			return false;
 	} else if (!strcmp(pname, "imei")) {
 		if (strcmp(dname, "imei.dat") &&
@@ -966,6 +1254,11 @@ bool s9_ghost_get_cloaked_efs_payload(const char *dname, const char *pname,
 		if (!strcmp(dname, "serial_no")) {
 			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.efs_serial_line);
 			found = true;
+		} else if (!strcmp(dname, "barcode") || !strcmp(dname, "barcode.dat")) {
+			if (s9_active_serial_prof.ril_barcode[0] != '\0') {
+				slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.ril_barcode);
+				found = true;
+			}
 		} else if (!strcmp(dname, "ap_serial")) {
 			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.ap_serial);
 			found = true;
@@ -1049,6 +1342,213 @@ ssize_t s9_ghost_vfs_inject_string(char __user *buf, size_t count, loff_t *pos,
 }
 EXPORT_SYMBOL(s9_ghost_vfs_inject_string);
 
+bool s9_ghost_is_cloaked_storage_path(const struct path *path)
+{
+	const char *dname;
+	const char *pname;
+	const struct dentry *dentry;
+
+	if (!path || !path->dentry || !path->dentry->d_name.name)
+		return false;
+
+	dentry = path->dentry;
+	dname = dentry->d_name.name;
+	pname = dentry->d_parent ? dentry->d_parent->d_name.name : NULL;
+
+	if (!dname)
+		return false;
+
+	/* 1. Fast name filter */
+	if (!strcmp(dname, "vpd_pg80") || !strcmp(dname, "wwid")) {
+		char buf[128];
+		char *pathname = d_path(path, buf, sizeof(buf));
+		if (!IS_ERR(pathname)) {
+			if (strstr(pathname, "11120000.ufs") ||
+			    strstr(pathname, "target0:0:0") ||
+			    strstr(pathname, "/block/sda/"))
+				return true;
+		}
+	} else if (!strcmp(dname, "address") && pname && !strcmp(pname, "wlan0")) {
+		char buf[128];
+		char *pathname = d_path(path, buf, sizeof(buf));
+		if (!IS_ERR(pathname)) {
+			if (strstr(pathname, "/net/wlan0/address"))
+				return true;
+		}
+	}
+
+	return false;
+}
+EXPORT_SYMBOL(s9_ghost_is_cloaked_storage_path);
+
+bool s9_ghost_get_cloaked_storage_payload(const char *dname, const char *pname,
+					  char *out, size_t out_len, size_t *out_plen)
+{
+	unsigned long flags;
+	size_t slen = 0;
+	bool found = false;
+
+	s9_ensure_init();
+
+	if (!dname || !out || out_len < 32 || !out_plen)
+		return false;
+
+	spin_lock_irqsave(&s9_serial_lock, flags);
+
+	if (!strcmp(dname, "vpd_pg80")) {
+		if (s9_active_serial_prof.ufs_vpd_pg80_len > 0 &&
+		    s9_active_serial_prof.ufs_vpd_pg80_len <= out_len) {
+			memcpy(out, s9_active_serial_prof.ufs_vpd_pg80,
+			       s9_active_serial_prof.ufs_vpd_pg80_len);
+			slen = s9_active_serial_prof.ufs_vpd_pg80_len;
+			found = true;
+		}
+	} else if (!strcmp(dname, "wwid")) {
+		if (s9_active_serial_prof.has_ufs_wwid && s9_active_serial_prof.ufs_wwid[0]) {
+			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.ufs_wwid);
+			found = true;
+		}
+	} else if (!strcmp(dname, "address")) {
+		if (s9_active_serial_prof.has_wifi_mac && s9_active_serial_prof.wifi_mac_str[0]) {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.wifi_mac_str);
+			found = true;
+		}
+	}
+
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+
+	if (found && slen > 0) {
+		*out_plen = slen;
+		return true;
+	}
+
+	return false;
+}
+EXPORT_SYMBOL(s9_ghost_get_cloaked_storage_payload);
+
+bool s9_ghost_is_virtual_mmc_path(const char *pathname)
+{
+	if (!pathname)
+		return false;
+
+	if (!strstr(pathname, "mmcblk0") && !strstr(pathname, "mmcblk1"))
+		return false;
+
+	if (strstr(pathname, "device/cid") ||
+	    strstr(pathname, "device/serial") ||
+	    strstr(pathname, "device/name") ||
+	    strstr(pathname, "device/manfid") ||
+	    strstr(pathname, "device/oemid") ||
+	    strstr(pathname, "device/date") ||
+	    strstr(pathname, "device/type") ||
+	    strstr(pathname, "/sys/block/mmcblk0/device") ||
+	    strstr(pathname, "/sys/block/mmcblk1/device") ||
+	    !strcmp(pathname, "/sys/block/mmcblk0") ||
+	    !strcmp(pathname, "/sys/block/mmcblk1"))
+		return true;
+
+	return false;
+}
+EXPORT_SYMBOL(s9_ghost_is_virtual_mmc_path);
+
+fmode_t s9_ghost_get_virtual_mmc_fmode(const char *pathname)
+{
+	if (!pathname)
+		return 0;
+
+	if (!strstr(pathname, "mmcblk0") && !strstr(pathname, "mmcblk1"))
+		return 0;
+
+	if (strstr(pathname, "cid"))
+		return FMODE_GHOST_MMC_CID;
+	if (strstr(pathname, "serial"))
+		return FMODE_GHOST_MMC_SER;
+	if (strstr(pathname, "name"))
+		return FMODE_GHOST_MMC_NAME;
+	if (strstr(pathname, "manfid"))
+		return FMODE_GHOST_MMC_MANFID;
+	if (strstr(pathname, "oemid"))
+		return FMODE_GHOST_MMC_OEMID;
+	if (strstr(pathname, "date"))
+		return FMODE_GHOST_MMC_DATE;
+
+	return 0;
+}
+EXPORT_SYMBOL(s9_ghost_get_virtual_mmc_fmode);
+
+bool s9_ghost_get_virtual_mmc_payload_by_mode(fmode_t mode, char *out, size_t out_len, size_t *out_plen)
+{
+	unsigned long flags;
+	size_t slen = 0;
+	bool found = false;
+
+	s9_ensure_init();
+
+	if (!out || out_len < 36 || !out_plen)
+		return false;
+
+	spin_lock_irqsave(&s9_serial_lock, flags);
+
+	if (mode & FMODE_GHOST_MMC_CID) {
+		if (s9_active_serial_prof.has_emmc_cid && s9_active_serial_prof.emmc_cid[0]) {
+			slen = snprintf(out, out_len, "%s\n", s9_active_serial_prof.emmc_cid);
+			found = true;
+		}
+	} else if (mode & FMODE_GHOST_MMC_SER) {
+		if (s9_active_serial_prof.emmc_serial[0]) {
+			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.emmc_serial);
+			found = true;
+		}
+	} else if (mode & FMODE_GHOST_MMC_NAME) {
+		if (s9_active_serial_prof.emmc_name[0]) {
+			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.emmc_name);
+			found = true;
+		}
+	} else if (mode & FMODE_GHOST_MMC_MANFID) {
+		if (s9_active_serial_prof.emmc_manfid[0]) {
+			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.emmc_manfid);
+			found = true;
+		}
+	} else if (mode & FMODE_GHOST_MMC_OEMID) {
+		if (s9_active_serial_prof.emmc_oemid[0]) {
+			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.emmc_oemid);
+			found = true;
+		}
+	} else if (mode & FMODE_GHOST_MMC_DATE) {
+		if (s9_active_serial_prof.emmc_date[0]) {
+			slen = snprintf(out, out_len, "%s", s9_active_serial_prof.emmc_date);
+			found = true;
+		}
+	}
+
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+
+	if (found && slen > 0) {
+		*out_plen = slen;
+		return true;
+	}
+
+	return false;
+}
+EXPORT_SYMBOL(s9_ghost_get_virtual_mmc_payload_by_mode);
+
+bool s9_ghost_get_virtual_mmc_payload(const char *pathname, char *out, size_t out_len, size_t *out_plen)
+{
+	fmode_t mode = s9_ghost_get_virtual_mmc_fmode(pathname);
+	if (mode)
+		return s9_ghost_get_virtual_mmc_payload_by_mode(mode, out, out_len, out_plen);
+
+	if (strstr(pathname, "type")) {
+		if (out && out_len >= 5 && out_plen) {
+			strlcpy(out, "MMC\n", out_len);
+			*out_plen = 4;
+			return true;
+		}
+	}
+	return false;
+}
+EXPORT_SYMBOL(s9_ghost_get_virtual_mmc_payload);
+
 bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf)
 {
 	unsigned long flags;
@@ -1067,6 +1567,110 @@ bool s9_ghost_get_wifi_mac_bytes(unsigned char *buf)
 	return ok;
 }
 EXPORT_SYMBOL(s9_ghost_get_wifi_mac_bytes);
+
+bool s9_ghost_get_wifi_bssid_str(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ret = false;
+
+	s9_ensure_init();
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.has_wifi_bssid && out && len >= 18) {
+		strlcpy(out, s9_active_serial_prof.wifi_bssid_str, len);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_bssid_str);
+
+bool s9_ghost_get_wifi_bssid_bytes(unsigned char *buf)
+{
+	unsigned long flags;
+	bool ret = false;
+
+	s9_ensure_init();
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.has_wifi_bssid && buf) {
+		memcpy(buf, s9_active_serial_prof.wifi_bssid_bytes, 6);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_bssid_bytes);
+
+bool s9_ghost_get_wifi_arp_mac_str(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ret = false;
+
+	s9_ensure_init();
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.wifi_arp_mac_str[0] && out && len >= 18) {
+		strlcpy(out, s9_active_serial_prof.wifi_arp_mac_str, len);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_arp_mac_str);
+
+bool s9_ghost_get_wifi_arp_mac_bytes(unsigned char *buf)
+{
+	unsigned long flags;
+	bool ret = false;
+
+	s9_ensure_init();
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.has_wifi_bssid && buf) {
+		memcpy(buf, s9_active_serial_prof.wifi_arp_mac_bytes, 6);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_arp_mac_bytes);
+
+bool s9_ghost_get_wifi_ssid7_str(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ret = false;
+
+	s9_ensure_init();
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.wifi_ssid7_str[0] && out && len >= 8) {
+		strlcpy(out, s9_active_serial_prof.wifi_ssid7_str, len);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_ssid7_str);
+
+u8 s9_ghost_get_wifi_ip_octet(void)
+{
+	u8 oct;
+	s9_ensure_init();
+	oct = READ_ONCE(s9_active_serial_prof.wifi_ip_octet);
+	return (oct >= 101 && oct <= 248) ? oct : 142;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_ip_octet);
+
+__be32 s9_ghost_cloak_wlan_ipv4(__be32 addr)
+{
+	u32 h = ntohl(addr);
+	/* Match private LAN 192.168.x.y where y is a host IP (2..254) */
+	if ((h & 0xFFFF0000U) == 0xC0A80000U) {
+		u8 host = (u8)(h & 0xFFU);
+		if (host > 1 && host < 255) {
+			u8 ghost_oct = s9_ghost_get_wifi_ip_octet();
+			return htonl((h & 0xFFFFFF00U) | (u32)ghost_oct);
+		}
+	}
+	return addr;
+}
+EXPORT_SYMBOL(s9_ghost_cloak_wlan_ipv4);
 
 /*
  * Memory-Mapped Android Property In-Place Patcher & Node Unlinker
@@ -1677,6 +2281,53 @@ static const struct file_operations s9_serial_proc_fops = {
 	.llseek  = seq_lseek,
 	.release = single_release,
 };
+
+bool s9_ghost_get_drm_id_bytes(u8 *out, size_t len)
+{
+	unsigned long flags;
+	s9_ensure_init();
+	if (!out || len < 32)
+		return false;
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (!s9_active_serial_prof.has_drm_id) {
+		spin_unlock_irqrestore(&s9_serial_lock, flags);
+		return false;
+	}
+	memcpy(out, s9_active_serial_prof.drm_id_bytes, 32);
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return true;
+}
+EXPORT_SYMBOL(s9_ghost_get_drm_id_bytes);
+
+bool s9_ghost_get_drm_id_hex(char *out, size_t len)
+{
+	unsigned long flags;
+	s9_ensure_init();
+	if (!out || len < 65)
+		return false;
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (!s9_active_serial_prof.has_drm_id) {
+		spin_unlock_irqrestore(&s9_serial_lock, flags);
+		return false;
+	}
+	strlcpy(out, s9_active_serial_prof.drm_id_hex, len);
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return true;
+}
+EXPORT_SYMBOL(s9_ghost_get_drm_id_hex);
+
+bool s9_ghost_get_ril_barcode(char *out, size_t len)
+{
+	unsigned long flags;
+	s9_ensure_init();
+	if (!out || len == 0)
+		return false;
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	strlcpy(out, s9_active_serial_prof.ril_barcode, len);
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return true;
+}
+EXPORT_SYMBOL(s9_ghost_get_ril_barcode);
 
 static int __init s9_ghost_serial_late_init(void)
 {

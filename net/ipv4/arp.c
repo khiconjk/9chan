@@ -1339,6 +1339,15 @@ static void arp_format_neigh_entry(struct seq_file *seq,
 	}
 #endif
 	sprintf(tbuf, "%pI4", n->primary_key);
+#if defined(CONFIG_S9_GHOST_SERIAL) || 1
+	if (dev && !strcmp(dev->name, "wlan0")) {
+		char ghost_bssid[32];
+		extern bool s9_ghost_get_wifi_bssid_str(char *out, size_t len);
+		if (s9_ghost_get_wifi_bssid_str(ghost_bssid, sizeof(ghost_bssid))) {
+			strlcpy(hbuffer, ghost_bssid, sizeof(hbuffer));
+		}
+	}
+#endif
 	seq_printf(seq, "%-16s 0x%-10x0x%-10x%-17s     *        %s\n",
 		   tbuf, hatype, arp_state_to_flags(n), hbuffer, dev->name);
 	read_unlock(&n->lock);

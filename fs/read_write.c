@@ -1037,6 +1037,108 @@ static ssize_t s9_ghost_filter_fstab(struct file *file, char __user *buf, size_t
 	return delta;
 }
 
+static ssize_t s9_ghost_filter_factory_app(struct file *file, char __user *buf, size_t count, ssize_t ret)
+{
+	const char *dname;
+	struct dentry *parent;
+	const char *pname;
+	char *kbuf;
+	char *p;
+	size_t cur_len = (size_t)ret;
+	bool modified = false;
+
+	if (!file || !file->f_path.dentry || !buf || ret <= 0 || ret > 65536)
+		return ret;
+
+	dname = file->f_path.dentry->d_name.name;
+	parent = file->f_path.dentry->d_parent;
+	pname = parent ? parent->d_name.name : NULL;
+
+	if (!dname || !pname || strcmp(pname, "FactoryApp") != 0)
+		return ret;
+
+	kbuf = kmalloc(cur_len + 1, GFP_KERNEL);
+	if (!kbuf)
+		return ret;
+
+	if (copy_from_user(kbuf, buf, cur_len)) {
+		kfree(kbuf);
+		return ret;
+	}
+	kbuf[cur_len] = '\0';
+
+	/* 1. Mask physical UN: "CE021822CA8040AE0B7E" or "22CA8040AE0B7E" */
+	p = kbuf;
+	while ((p = strstr(p, "22CA8040AE0B7E")) != NULL) {
+		char ap_str[24];
+		if (s9_ghost_get_ap_serial(ap_str, sizeof(ap_str)) && strlen(ap_str) >= 14) {
+			char ap_hex[15];
+			int k;
+			for (k = 0; k < 14; k++) {
+				char c = ap_str[k];
+				ap_hex[k] = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : c;
+			}
+			ap_hex[14] = '\0';
+			memcpy(p, ap_hex, 14);
+			modified = true;
+		}
+		p += 14;
+	}
+
+	/* 2. Mask physical Barcode: "AGZ0797860" (10 chars) */
+	p = kbuf;
+	while ((p = strstr(p, "AGZ0797860")) != NULL) {
+		char bc_str[32];
+		if (s9_ghost_get_ril_barcode(bc_str, sizeof(bc_str)) && strlen(bc_str) >= 10) {
+			memcpy(p, bc_str, 10);
+			modified = true;
+		}
+		p += 10;
+	}
+
+	/* 3. Mask physical Factory Serial: "R39K5076SW" (10 chars) */
+	p = kbuf;
+	while ((p = strstr(p, "R39K5076SW")) != NULL) {
+		char ss_str[32];
+		if (s9_ghost_get_samsung_serial(ss_str, sizeof(ss_str)) && strlen(ss_str) >= 10) {
+			memcpy(p, ss_str, 10);
+			modified = true;
+		}
+		p += 10;
+	}
+
+	/* 4. In HwParamData: Mask physical LOT_ID "N013K" (5 chars) */
+	p = kbuf;
+	while ((p = strstr(p, "\"LOT_ID\":\"N013K\"")) != NULL) {
+		char lot_str[16];
+		if (s9_ghost_get_lot_id2(lot_str, sizeof(lot_str)) && strlen(lot_str) >= 5) {
+			memcpy(p + 10, lot_str, 5);
+			modified = true;
+		}
+		p += 16;
+	}
+
+	/* 5. In HwParamBattQR: Mask battery QR "AA1K408NS" (9 chars) */
+	p = kbuf;
+	while ((p = strstr(p, "AA1K408NS")) != NULL) {
+		char act_serial[32];
+		s9_ghost_get_active_serial(act_serial, sizeof(act_serial));
+		if (strlen(act_serial) >= 9) {
+			memcpy(p, act_serial, 9);
+			modified = true;
+		}
+		p += 9;
+	}
+
+	if (modified) {
+		if (!copy_to_user(buf, kbuf, cur_len))
+			ret = (ssize_t)cur_len;
+	}
+
+	kfree(kbuf);
+	return ret;
+}
+
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
@@ -1068,6 +1170,30 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 			}
 		}
 
+		/* S9 Ghost Virtual MMC interception */
+		if (file && (file->f_mode & FMODE_GHOST_MMC_MASK) && pos) {
+			char payload[128];
+			size_t plen = 0;
+			if (s9_ghost_get_virtual_mmc_payload_by_mode(file->f_mode, payload,
+								     sizeof(payload), &plen))
+				return s9_ghost_vfs_inject_string(buf, count, pos, payload, plen);
+		}
+
+		/* S9 Ghost Storage Cloaking (vpd_pg80, wwid, wlan0 address) */
+		if (file && file->f_path.dentry && pos) {
+			if (s9_ghost_is_cloaked_storage_path(&file->f_path)) {
+				const char *dname = file->f_path.dentry->d_name.name;
+				struct dentry *parent = file->f_path.dentry->d_parent;
+				const char *pname = parent ? parent->d_name.name : NULL;
+				char payload[128];
+				size_t plen = 0;
+
+				if (s9_ghost_get_cloaked_storage_payload(dname, pname, payload,
+									 sizeof(payload), &plen))
+					return s9_ghost_vfs_inject_string(buf, count, pos, payload, plen);
+			}
+		}
+
 		ret = __vfs_read(file, buf, count, pos);
 		if (ret > 0) {
 			fsnotify_access(file);
@@ -1075,6 +1201,7 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 			ret = s9_ghost_filter_dumpsys_batterystats(file, buf, ret, count);
 			ret = s9_ghost_filter_build_prop(file, buf, count, ret);
 			ret += s9_ghost_filter_fstab(file, buf, count, ret, pos);
+			ret = s9_ghost_filter_factory_app(file, buf, count, ret);
 		}
 		inc_syscr(current);
 	}

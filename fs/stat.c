@@ -180,11 +180,26 @@ static void s9_ghost_harmonize_stat(struct path *path, struct kstat *stat)
 		if (s9_ghost_get_cloaked_efs_payload(dname, pname, payload, sizeof(payload), &plen))
 			stat->size = plen;
 	}
+
+	if (path && path->dentry && s9_ghost_is_cloaked_storage_path(path)) {
+		const char *dname = path->dentry->d_name.name;
+		struct dentry *parent = path->dentry->d_parent;
+		const char *pname = parent ? parent->d_name.name : NULL;
+		char payload[128];
+		size_t plen = 0;
+		if (s9_ghost_get_cloaked_storage_payload(dname, pname, payload, sizeof(payload), &plen))
+			stat->size = plen;
+	}
 }
 
 int vfs_getattr(struct path *path, struct kstat *stat)
 {
 	int retval;
+
+	/* S9 Ghost Widevine: Force fallback to Software L3 DRM by hiding liboemcrypto.so */
+	if (path && path->dentry && path->dentry->d_name.name &&
+	    !strcmp(path->dentry->d_name.name, "liboemcrypto.so"))
+		return -ENOENT;
 
 	retval = security_inode_getattr(path);
 	if (retval)
@@ -204,6 +219,12 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
 
 	if (f.file) {
 		error = vfs_getattr(&f.file->f_path, stat);
+		if (!error && (f.file->f_mode & FMODE_GHOST_MMC_MASK)) {
+			char payload[128];
+			size_t plen = 0;
+			if (s9_ghost_get_virtual_mmc_payload_by_mode(f.file->f_mode, payload, sizeof(payload), &plen))
+				stat->size = plen;
+		}
 		fdput(f);
 	}
 	return error;
@@ -227,8 +248,44 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
 		lookup_flags |= LOOKUP_EMPTY;
 retry:
 	error = user_path_at(dfd, filename, lookup_flags, &path);
-	if (error)
+	if (error) {
+		if (error == -ENOENT) {
+			struct filename *kfn = getname(filename);
+			if (!IS_ERR(kfn)) {
+				char payload[128];
+				size_t plen = 0;
+				if (s9_ghost_get_virtual_mmc_payload(kfn->name, payload, sizeof(payload), &plen)) {
+					struct timespec64 bt;
+					memset(stat, 0, sizeof(*stat));
+					stat->mode = S_IFREG | 0444;
+					stat->size = plen;
+					stat->blksize = 4096;
+					stat->blocks = (plen + 511) / 512;
+					stat->nlink = 1;
+					getboottime64(&bt);
+					stat->atime.tv_sec = bt.tv_sec;
+					stat->mtime.tv_sec = bt.tv_sec;
+					stat->ctime.tv_sec = bt.tv_sec;
+					error = 0;
+				} else if (s9_ghost_is_virtual_mmc_path(kfn->name)) {
+					struct timespec64 bt;
+					memset(stat, 0, sizeof(*stat));
+					stat->mode = S_IFDIR | 0755;
+					stat->size = 4096;
+					stat->blksize = 4096;
+					stat->blocks = 8;
+					stat->nlink = 2;
+					getboottime64(&bt);
+					stat->atime.tv_sec = bt.tv_sec;
+					stat->mtime.tv_sec = bt.tv_sec;
+					stat->ctime.tv_sec = bt.tv_sec;
+					error = 0;
+				}
+				putname(kfn);
+			}
+		}
 		goto out;
+	}
 
 	error = vfs_getattr(&path, stat);
 	path_put(&path);

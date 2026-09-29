@@ -22,6 +22,7 @@ for f in \
   fs/statfs.c \
   fs/read_write.c \
   net/unix/af_unix.c \
+  net/ipv4/arp.c \
   AnyKernel3/anykernel.sh \
   AnyKernel3/init.fix_storage.rc \
   AnyKernel3/init.samsungexynos9810.usb.rc \

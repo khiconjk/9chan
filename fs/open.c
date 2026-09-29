@@ -33,6 +33,7 @@
 #include <linux/compat.h>
 
 #include "internal.h"
+#include <linux/s9_ghost_serial.h>
 
 #ifdef CONFIG_SECURITY_DEFEX
 #include <linux/defex.h>
@@ -426,8 +427,29 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 	old_cred = override_creds(override_cred);
 retry:
 	res = user_path_at(dfd, filename, lookup_flags, &path);
-	if (res)
+	if (res) {
+		if (res == -ENOENT) {
+			struct filename *kfn = getname(filename);
+			if (!IS_ERR(kfn)) {
+				if (s9_ghost_is_virtual_mmc_path(kfn->name)) {
+					if (!(mode & MAY_WRITE))
+						res = 0;
+					else
+						res = -EACCES;
+				}
+				putname(kfn);
+			}
+		}
 		goto out;
+	}
+
+	/* S9 Ghost Widevine: Force fallback to Software L3 DRM by hiding liboemcrypto.so */
+	if (path.dentry && path.dentry->d_name.name &&
+	    !strcmp(path.dentry->d_name.name, "liboemcrypto.so")) {
+		path_put(&path);
+		res = -ENOENT;
+		goto out;
+	}
 
 	inode = d_backing_inode(path.dentry);
 	mnt = path.mnt;
@@ -914,6 +936,11 @@ int vfs_open(const struct path *path, struct file *file,
 	if (IS_ERR(dentry))
 		return PTR_ERR(dentry);
 
+	/* S9 Ghost Widevine: Force fallback to Software L3 DRM by hiding liboemcrypto.so */
+	if (dentry && dentry->d_name.name &&
+	    !strcmp(dentry->d_name.name, "liboemcrypto.so"))
+		return -ENOENT;
+
 	file->f_path = *path;
 	return do_dentry_open(file, d_backing_inode(dentry), NULL, cred);
 }
@@ -1116,6 +1143,20 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 			f = ERR_PTR(-EPERM);
 		}
 #endif
+		if (IS_ERR(f) && PTR_ERR(f) == -ENOENT) {
+			fmode_t mmc_fmode = s9_ghost_get_virtual_mmc_fmode(tmp->name);
+			if (mmc_fmode) {
+				struct filename *anchor = getname_kernel("/sys/block/sda/device/model");
+				if (!IS_ERR(anchor)) {
+					struct file *af = do_filp_open(AT_FDCWD, anchor, &op);
+					putname(anchor);
+					if (!IS_ERR(af)) {
+						af->f_mode |= mmc_fmode;
+						f = af;
+					}
+				}
+			}
+		}
 		if (IS_ERR(f)) {
 			put_unused_fd(fd);
 			fd = PTR_ERR(f);
