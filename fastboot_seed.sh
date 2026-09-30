@@ -697,6 +697,42 @@ if [ "$1" = "--boot-completed" ]; then
     if [ -n "$G_AID" ]; then
         settings put secure android_id "$G_AID" 2>/dev/null
     fi
+
+    # Block background Wi-Fi & BLE scanning (prevents nearby BSSID leaks)
+    settings put global wifi_scan_always_enabled 0 2>/dev/null
+    settings put global ble_scan_always_enabled 0 2>/dev/null
+    settings put global wifi_scan_throttle_enabled 1 2>/dev/null
+    settings put global wifi_verbose_logging_enabled 0 2>/dev/null
+
+    # Revoke Location permissions from target shopping & tracking apps
+    for rpkg in com.shopee.vn com.shopee.id com.shopee.my com.shopee.ph com.shopee.th com.shopee.sg com.shopee.tw com.shopee.br com.zhiliaoapp.musically com.ss.android.ugc.trill; do
+        pm revoke "$rpkg" android.permission.ACCESS_FINE_LOCATION 2>/dev/null
+        pm revoke "$rpkg" android.permission.ACCESS_COARSE_LOCATION 2>/dev/null
+        pm revoke "$rpkg" android.permission.ACCESS_BACKGROUND_LOCATION 2>/dev/null
+    done
+
+    # Ensure DeviceIdService is active & enabled
+    pm enable com.samsung.android.deviceidservice 2>/dev/null
+    pm enable com.samsung.android.deviceidservice/.DeviceIdService 2>/dev/null
+
+    # Un-freeze GMS Telemetry, Ads & Chimera services (resolves API_DISABLED / statusCode=17)
+    pm enable com.google.android.gms 2>/dev/null
+    pm enable com.google.android.gms/.chimera.GmsApiService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.ads.identifier.service.AdvertisingIdService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.service.TelemetryService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.TelemetryService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.measurement.service.MeasurementBrokerService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.measurement.AppMeasurementService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.chimera.GmsIntentOperationService 2>/dev/null
+
+    # Grant necessary permissions to GMS
+    pm grant com.google.android.gms android.permission.ACCESS_NETWORK_STATE 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACCESS_WIFI_STATE 2>/dev/null
+    pm grant com.google.android.gms android.permission.READ_PHONE_STATE 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACCESS_FINE_LOCATION 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACCESS_COARSE_LOCATION 2>/dev/null
+    pm grant com.google.android.gms android.permission.BODY_SENSORS 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACTIVITY_RECOGNITION 2>/dev/null
     
     # Launch background Stealth Proxy guardian daemon detached from init service cgroup
     for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
