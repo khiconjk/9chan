@@ -668,6 +668,7 @@ if [ "$1" = "--boot-completed" ]; then
     settings put secure user_setup_complete 1 2>/dev/null
     settings put secure sec_setupwizard_complete 1 2>/dev/null
     settings put secure tv_user_setup_complete 1 2>/dev/null
+    settings put secure navigation_mode 0 2>/dev/null
     settings put global adb_enabled 0 2>/dev/null
     settings put global development_settings_enabled 0 2>/dev/null
     settings put global hide_error_dialogs 1 2>/dev/null
@@ -771,6 +772,7 @@ if [ "$1" = "--boot-completed" ]; then
             settings put secure user_setup_complete 1 2>/dev/null
             settings put secure sec_setupwizard_complete 1 2>/dev/null
             settings put secure tv_user_setup_complete 1 2>/dev/null
+            settings put secure navigation_mode 0 2>/dev/null
             settings put global adb_enabled 0 2>/dev/null
             settings put global development_settings_enabled 0 2>/dev/null
             if [ -f /proc/s9_serial ]; then
@@ -853,7 +855,8 @@ EOF
   <setting id="2" name="sec_setupwizard_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="3" name="tv_user_setup_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="4" name="lockscreen.disabled" value="1" package="android" defaultValue="1" defaultSysSet="true" />
-  <setting id="5" name="android_id" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" />
+  <setting id="5" name="navigation_mode" value="0" package="android" defaultValue="0" defaultSysSet="true" />
+  <setting id="6" name="android_id" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" />
 </settings>
 EOF
     fi
