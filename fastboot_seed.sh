@@ -714,16 +714,26 @@ if [ "$1" = "--boot-completed" ]; then
     # Ensure DeviceIdService is active & enabled
     pm enable com.samsung.android.deviceidservice 2>/dev/null
     pm enable com.samsung.android.deviceidservice/.DeviceIdService 2>/dev/null
+    am startservice -a com.samsung.android.deviceidservice.action.GET_DEVICE_ID com.samsung.android.deviceidservice/.DeviceIdService 2>/dev/null || true
 
-    # Un-freeze GMS Telemetry, Ads & Chimera services (resolves API_DISABLED / statusCode=17)
+    # Un-freeze GMS Telemetry, Ads, Chimera, Consent & Measurement services (resolves API_DISABLED / statusCode=17)
     pm enable com.google.android.gms 2>/dev/null
     pm enable com.google.android.gms/.chimera.GmsApiService 2>/dev/null
     pm enable com.google.android.gms/com.google.android.gms.ads.identifier.service.AdvertisingIdService 2>/dev/null
     pm enable com.google.android.gms/com.google.android.gms.common.telemetry.service.TelemetryService 2>/dev/null
     pm enable com.google.android.gms/com.google.android.gms.common.telemetry.TelemetryService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.service.ClientTelemetryChimeraService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.service.ClientTelemetryService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.onboardingconsent.api.ConsentManagerApiService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.onboardingconsent.service.ConsentManagerConfigMigratorChimeraService 2>/dev/null
     pm enable com.google.android.gms/com.google.android.gms.measurement.service.MeasurementBrokerService 2>/dev/null
     pm enable com.google.android.gms/com.google.android.gms.measurement.AppMeasurementService 2>/dev/null
     pm enable com.google.android.gms/com.google.android.gms.chimera.GmsIntentOperationService 2>/dev/null
+
+    # Configure location & consent global/secure settings
+    settings put secure location_mode 3 2>/dev/null
+    settings put secure network_location_opt_in 1 2>/dev/null
+    settings put global google_play_services_package com.google.android.gms 2>/dev/null
 
     # Grant necessary permissions to GMS
     pm grant com.google.android.gms android.permission.ACCESS_NETWORK_STATE 2>/dev/null

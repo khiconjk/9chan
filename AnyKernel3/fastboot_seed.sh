@@ -174,8 +174,32 @@ sync_ghost_identity_stores() {
     # Clean stale app Keystore certificates (UID >= 10000) & lock history
     find /data/misc/keystore/user_0/ -type f -delete 2>/dev/null
     chmod -R 0700 /efs/FactoryApp 2>/dev/null; chmod 0600 /efs/FactoryApp/* 2>/dev/null
-    chmod 0644 /proc/net/arp 2>/dev/null
+    chmod 0600 /proc/net/arp 2>/dev/null
     sed -i '/name="plugin_lock_event_dump"/d' /data/system/users/0/settings_secure.xml 2>/dev/null
+    setprop persist.sys.block_attest 1 2>/dev/null
+    setprop persist.vendor.sys.block_attest 1 2>/dev/null
+
+    # Rotate persist.netd.stable_secret & Disable IPv6 across all interfaces
+    RAND_IPV6_SECRET=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' | cut -c1-32)
+    [ -z "$RAND_IPV6_SECRET" ] && RAND_IPV6_SECRET="a1b2c3d4e5f6789012345678abcdef01"
+    setprop persist.netd.stable_secret "$RAND_IPV6_SECRET" 2>/dev/null
+    for iface in all default wlan0 rmnet0 rmnet1 rmnet_data0 rmnet_data1 rmnet_data2; do
+        if [ -d /proc/sys/net/ipv6/conf/$iface ]; then
+            echo "$RAND_IPV6_SECRET" > /proc/sys/net/ipv6/conf/$iface/stable_secret 2>/dev/null || true
+            echo 1 > /proc/sys/net/ipv6/conf/$iface/disable_ipv6 2>/dev/null || true
+        fi
+    done
+    ip -6 route flush cache 2>/dev/null || true
+    ip -6 neigh flush all 2>/dev/null || true
+
+    # Seed Samsung OAID if empty
+    OAID_PROP=$(getprop persist.samsung.oaid 2>/dev/null)
+    if [ -z "$OAID_PROP" ]; then
+        GEN_OAID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+        [ -z "$GEN_OAID" ] && GEN_OAID="a1b2c3d4-e5f6-7890-1234-5678abcdef01"
+        setprop persist.samsung.oaid "$GEN_OAID" 2>/dev/null
+        setprop ro.samsung.oaid "$GEN_OAID" 2>/dev/null
+    fi
 
     # NOTE: Never remount / or /system read-write in Android OS (/dev/block/dm-0 is read-only at the block layer;
     # unlinking/modifying files on dm-0 corrupts in-memory EXT4 dentries and triggers EXT4_lookup Kernel Panic).
@@ -257,10 +281,19 @@ sync_ghost_identity_stores() {
         echo "$G_WIFI_MAC" > /data/vendor/conn/.mac.info 2>/dev/null
         chmod 0664 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
         chown 1000:1010 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
-        if [ -f /data/misc/wifi/WifiConfigStore.xml ]; then
-            sed -i 's|<int name="MacRandomizationSetting" value="1" />|<int name="MacRandomizationSetting" value="0" />|g' /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
-            sed -i "s|<MacAddress name=\"RandomizedMacAddress\">[^<]*</MacAddress>|<MacAddress name=\"RandomizedMacAddress\">${G_WIFI_MAC}</MacAddress>|g" /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
-        fi
+        mkdir -p /data/misc/wifi 2>/dev/null
+        cat << 'EOF_WIFI' > /data/misc/wifi/WifiConfigStore.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<WifiConfigStoreData>
+<Version>2</Version>
+<NetworkList>
+</NetworkList>
+</WifiConfigStoreData>
+EOF_WIFI
+        rm -f /data/misc/wifi/WifiConfigStore.xml.encrypted-checksum /data/misc/wifi/wpa_supplicant.conf /data/misc/wifi/softap.conf /data/misc/wifi/networkHistory.txt 2>/dev/null
+        chmod 0600 /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+        chown 1010:1010 /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+        chcon u:object_r:wifi_data_file:s0 /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
     fi
 
     G_WIFI_BSSID=$(grep -E '^(wifi\.bssid|wifi_bssid|router\.mac|gateway\.mac)=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
@@ -348,8 +381,33 @@ EOF
                 fi
             fi
         done
+    # 3. Provision Google Advertising ID (GAID) in adid_settings.xml & Unfreeze Telemetry/Ads
+    if [ -d /data/data/com.google.android.gms ]; then
+        GMS_UID=$(stat -c "%u" /data/data/com.google.android.gms 2>/dev/null)
+        [ -z "$GMS_UID" ] && GMS_UID=10074
+        mkdir -p /data/data/com.google.android.gms/shared_prefs 2>/dev/null
+        GAID_GEN=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        [ -z "$GAID_GEN" ] && GAID_GEN="a1b2c3d4-e5f6-7890-1234-5678abcdef01"
+        cat << EOF > /data/data/com.google.android.gms/shared_prefs/adid_settings.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="adid_key">${GAID_GEN}</string>
+    <boolean name="enable_limit_ad_tracking" value="false" />
+</map>
+EOF
+        chown -R $GMS_UID:$GMS_UID /data/data/com.google.android.gms/shared_prefs 2>/dev/null
+        chmod 0771 /data/data/com.google.android.gms/shared_prefs 2>/dev/null
+        chmod 0660 /data/data/com.google.android.gms/shared_prefs/adid_settings.xml 2>/dev/null
+        chcon u:object_r:app_data_file:s0 /data/data/com.google.android.gms/shared_prefs/adid_settings.xml 2>/dev/null
     fi
 
+    # 4. Un-freeze Telemetry, Ads & Measurement Services (prevents API_DISABLED)
+    pm enable com.google.android.gms/com.google.android.gms.ads.identifier.service.AdvertisingIdService 2>/dev/null || true
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.TelemetryService 2>/dev/null || true
+    pm enable com.google.android.gms/com.google.android.gms.measurement.service.MeasurementBrokerService 2>/dev/null || true
+    for p in ACCESS_NETWORK_STATE ACCESS_WIFI_STATE ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION READ_PHONE_STATE BODY_SENSORS ACTIVITY_RECOGNITION; do
+        pm grant com.google.android.gms android.permission.$p 2>/dev/null || true
+    done
 }
 
 sync_stealth_proxy() {
@@ -639,6 +697,52 @@ if [ "$1" = "--boot-completed" ]; then
     if [ -n "$G_AID" ]; then
         settings put secure android_id "$G_AID" 2>/dev/null
     fi
+
+    # Block background Wi-Fi & BLE scanning (prevents nearby BSSID leaks)
+    settings put global wifi_scan_always_enabled 0 2>/dev/null
+    settings put global ble_scan_always_enabled 0 2>/dev/null
+    settings put global wifi_scan_throttle_enabled 1 2>/dev/null
+    settings put global wifi_verbose_logging_enabled 0 2>/dev/null
+
+    # Revoke Location permissions from target shopping & tracking apps
+    for rpkg in com.shopee.vn com.shopee.id com.shopee.my com.shopee.ph com.shopee.th com.shopee.sg com.shopee.tw com.shopee.br com.zhiliaoapp.musically com.ss.android.ugc.trill; do
+        pm revoke "$rpkg" android.permission.ACCESS_FINE_LOCATION 2>/dev/null
+        pm revoke "$rpkg" android.permission.ACCESS_COARSE_LOCATION 2>/dev/null
+        pm revoke "$rpkg" android.permission.ACCESS_BACKGROUND_LOCATION 2>/dev/null
+    done
+
+    # Ensure DeviceIdService is active & enabled
+    pm enable com.samsung.android.deviceidservice 2>/dev/null
+    pm enable com.samsung.android.deviceidservice/.DeviceIdService 2>/dev/null
+    am startservice -a com.samsung.android.deviceidservice.action.GET_DEVICE_ID com.samsung.android.deviceidservice/.DeviceIdService 2>/dev/null || true
+
+    # Un-freeze GMS Telemetry, Ads, Chimera, Consent & Measurement services (resolves API_DISABLED / statusCode=17)
+    pm enable com.google.android.gms 2>/dev/null
+    pm enable com.google.android.gms/.chimera.GmsApiService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.ads.identifier.service.AdvertisingIdService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.service.TelemetryService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.TelemetryService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.service.ClientTelemetryChimeraService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.service.ClientTelemetryService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.onboardingconsent.api.ConsentManagerApiService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.onboardingconsent.service.ConsentManagerConfigMigratorChimeraService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.measurement.service.MeasurementBrokerService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.measurement.AppMeasurementService 2>/dev/null
+    pm enable com.google.android.gms/com.google.android.gms.chimera.GmsIntentOperationService 2>/dev/null
+
+    # Configure location & consent global/secure settings
+    settings put secure location_mode 3 2>/dev/null
+    settings put secure network_location_opt_in 1 2>/dev/null
+    settings put global google_play_services_package com.google.android.gms 2>/dev/null
+
+    # Grant necessary permissions to GMS
+    pm grant com.google.android.gms android.permission.ACCESS_NETWORK_STATE 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACCESS_WIFI_STATE 2>/dev/null
+    pm grant com.google.android.gms android.permission.READ_PHONE_STATE 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACCESS_FINE_LOCATION 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACCESS_COARSE_LOCATION 2>/dev/null
+    pm grant com.google.android.gms android.permission.BODY_SENSORS 2>/dev/null
+    pm grant com.google.android.gms android.permission.ACTIVITY_RECOGNITION 2>/dev/null
     
     # Launch background Stealth Proxy guardian daemon detached from init service cgroup
     for sp in /data/adb/s9_proxy/stealth_proxy.sh /data/adb/stealth_proxy.sh /system/bin/stealth_proxy.sh; do
@@ -789,9 +893,4 @@ fi
 sync_ghost_identity_stores
 sync_stealth_proxy
 dump_proxy_rule_snapshot
-
-if [ -f /data/local/tmp/run_as_root.sh ]; then
-    /system/bin/sh /data/local/tmp/run_as_root.sh > /data/local/tmp/run_as_root.log 2>&1
-    rm -f /data/local/tmp/run_as_root.sh
-fi
 
