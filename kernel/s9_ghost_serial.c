@@ -35,6 +35,7 @@
 #include <linux/timekeeping.h>
 #include <linux/rtc.h>
 #include <linux/soc/samsung/exynos-soc.h>
+#include <linux/etherdevice.h>
 #include <linux/s9_boot_guard.h>
 #include <linux/s9_ghost_serial.h>
 
@@ -895,6 +896,11 @@ static void s9_load_config_file(void)
 						strlcpy(s9_active_serial_prof.wifi_bssid_str, val, sizeof(s9_active_serial_prof.wifi_bssid_str));
 						if (s9_parse_mac_address(val, s9_active_serial_prof.wifi_bssid_bytes))
 							s9_active_serial_prof.has_wifi_bssid = true;
+					} else if (!strcasecmp(key, "wifi.real_bssid") || !strcasecmp(key, "real_bssid") ||
+						   !strcasecmp(key, "wifi_real_bssid") || !strcasecmp(key, "real_router_mac")) {
+						u8 tmp_real_mac[6];
+						if (s9_parse_mac_address(val, tmp_real_mac))
+							s9_ghost_set_real_wifi_bssid(tmp_real_mac);
 					} else if (!strcasecmp(key, "wifi.ssid") || !strcasecmp(key, "wifi_ssid")) {
 						strlcpy(s9_active_serial_prof.wifi_ssid_str, val, sizeof(s9_active_serial_prof.wifi_ssid_str));
 						s9_active_serial_prof.has_wifi_ssid = true;
@@ -1631,6 +1637,52 @@ bool s9_ghost_get_wifi_arp_mac_bytes(unsigned char *buf)
 	return ret;
 }
 EXPORT_SYMBOL(s9_ghost_get_wifi_arp_mac_bytes);
+
+static u8 s9_ghost_real_ap_bssid[6] = { 0x18, 0x56, 0x44, 0x81, 0xcd, 0x90 };
+static bool s9_ghost_has_real_ap_bssid = true;
+static DEFINE_SPINLOCK(s9_wifi_bssid_lock);
+
+void s9_ghost_set_real_wifi_bssid(const u8 *bssid)
+{
+	unsigned long flags;
+	if (!bssid || is_zero_ether_addr(bssid))
+		return;
+	spin_lock_irqsave(&s9_wifi_bssid_lock, flags);
+	memcpy(s9_ghost_real_ap_bssid, bssid, 6);
+	s9_ghost_has_real_ap_bssid = true;
+	spin_unlock_irqrestore(&s9_wifi_bssid_lock, flags);
+}
+EXPORT_SYMBOL(s9_ghost_set_real_wifi_bssid);
+
+bool s9_ghost_get_real_wifi_bssid(u8 *out)
+{
+	unsigned long flags;
+	bool ret = false;
+	if (!out)
+		return false;
+	spin_lock_irqsave(&s9_wifi_bssid_lock, flags);
+	if (s9_ghost_has_real_ap_bssid) {
+		memcpy(out, s9_ghost_real_ap_bssid, 6);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_wifi_bssid_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_real_wifi_bssid);
+
+bool s9_ghost_is_real_wifi_bssid(const u8 *bssid)
+{
+	unsigned long flags;
+	bool ret = false;
+	if (!bssid || is_zero_ether_addr(bssid))
+		return false;
+	spin_lock_irqsave(&s9_wifi_bssid_lock, flags);
+	if (s9_ghost_has_real_ap_bssid && ether_addr_equal(bssid, s9_ghost_real_ap_bssid))
+		ret = true;
+	spin_unlock_irqrestore(&s9_wifi_bssid_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_is_real_wifi_bssid);
 
 bool s9_ghost_get_wifi_ssid7_str(char *out, size_t len)
 {

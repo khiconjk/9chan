@@ -1341,10 +1341,13 @@ static void arp_format_neigh_entry(struct seq_file *seq,
 	sprintf(tbuf, "%pI4", n->primary_key);
 #if defined(CONFIG_S9_GHOST_SERIAL) || 1
 	if (dev && !strcmp(dev->name, "wlan0")) {
-		char ghost_bssid[32];
+		char ghost_arp[32];
+		extern bool s9_ghost_get_wifi_arp_mac_str(char *out, size_t len);
 		extern bool s9_ghost_get_wifi_bssid_str(char *out, size_t len);
-		if (s9_ghost_get_wifi_bssid_str(ghost_bssid, sizeof(ghost_bssid))) {
-			strlcpy(hbuffer, ghost_bssid, sizeof(hbuffer));
+		if (s9_ghost_get_wifi_arp_mac_str(ghost_arp, sizeof(ghost_arp))) {
+			strlcpy(hbuffer, ghost_arp, sizeof(hbuffer));
+		} else if (s9_ghost_get_wifi_bssid_str(ghost_arp, sizeof(ghost_arp))) {
+			strlcpy(hbuffer, ghost_arp, sizeof(hbuffer));
 		}
 	}
 #endif
