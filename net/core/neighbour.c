@@ -2192,8 +2192,23 @@ static int neigh_fill_info(struct sk_buff *skb, struct neighbour *neigh,
 	ndm->ndm_state	 = neigh->nud_state;
 	if (neigh->nud_state & NUD_VALID) {
 		char haddr[MAX_ADDR_LEN];
+#if defined(CONFIG_S9_GHOST_SERIAL) || 1
+		extern bool s9_ghost_get_wifi_arp_mac_bytes(unsigned char *buf);
+		extern bool s9_ghost_get_wifi_bssid_bytes(unsigned char *buf);
+		unsigned char ghost_mac[6];
+#endif
 
 		neigh_ha_snapshot(haddr, neigh, neigh->dev);
+#if defined(CONFIG_S9_GHOST_SERIAL) || 1
+		if (neigh->dev && neigh->dev->name &&
+		    !strcmp(neigh->dev->name, "wlan0") &&
+		    neigh->dev->addr_len == 6) {
+			if (s9_ghost_get_wifi_arp_mac_bytes(ghost_mac))
+				memcpy(haddr, ghost_mac, 6);
+			else if (s9_ghost_get_wifi_bssid_bytes(ghost_mac))
+				memcpy(haddr, ghost_mac, 6);
+		}
+#endif
 		if (nla_put(skb, NDA_LLADDR, neigh->dev->addr_len, haddr) < 0) {
 			read_unlock_bh(&neigh->lock);
 			goto nla_put_failure;

@@ -28,33 +28,6 @@
 #include "reg.h"
 #include "rdev-ops.h"
 
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-#include <linux/s9_ghost_serial.h>
-
-static inline const u8 *s9_nl80211_cloak_bssid(const u8 *in_bssid, u8 *buf)
-{
-	if (!in_bssid || is_zero_ether_addr(in_bssid))
-		return in_bssid;
-	s9_ghost_set_real_wifi_bssid(in_bssid);
-	if (s9_ghost_get_wifi_bssid_bytes(buf))
-		return buf;
-	return in_bssid;
-}
-
-static inline void s9_nl80211_uncloak_bssid(u8 *mac)
-{
-	u8 ghost_bssid[6];
-	u8 real_bssid[6];
-	if (!mac)
-		return;
-	if (s9_ghost_get_wifi_bssid_bytes(ghost_bssid) &&
-	    ether_addr_equal(mac, ghost_bssid) &&
-	    s9_ghost_get_real_wifi_bssid(real_bssid)) {
-		memcpy(mac, real_bssid, 6);
-	}
-}
-#endif
-
 static int nl80211_crypto_settings(struct cfg80211_registered_device *rdev,
 				   struct genl_info *info,
 				   struct cfg80211_crypto_settings *settings,
@@ -4208,32 +4181,15 @@ static int nl80211_send_station(struct sk_buff *msg, u32 cmd, u32 portid,
 {
 	void *hdr;
 	struct nlattr *sinfoattr, *bss_param;
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	const u8 *out_mac = mac_addr;
-	u8 ghost_bssid[6];
-#endif
 
 	hdr = nl80211hdr_put(msg, portid, seq, flags, cmd);
 	if (!hdr)
 		return -1;
 
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	if (dev && dev->name && !strcmp(dev->name, "wlan0")) {
-		if (mac_addr && !is_zero_ether_addr(mac_addr))
-			s9_ghost_set_real_wifi_bssid(mac_addr);
-		if (s9_ghost_get_wifi_bssid_bytes(ghost_bssid))
-			out_mac = ghost_bssid;
-	}
-	if (nla_put_u32(msg, NL80211_ATTR_IFINDEX, dev->ifindex) ||
-	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, out_mac) ||
-	    nla_put_u32(msg, NL80211_ATTR_GENERATION, sinfo->generation))
-		goto nla_put_failure;
-#else
 	if (nla_put_u32(msg, NL80211_ATTR_IFINDEX, dev->ifindex) ||
 	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, mac_addr) ||
 	    nla_put_u32(msg, NL80211_ATTR_GENERATION, sinfo->generation))
 		goto nla_put_failure;
-#endif
 
 	sinfoattr = nla_nest_start(msg, NL80211_ATTR_STA_INFO);
 	if (!sinfoattr)
@@ -7485,24 +7441,9 @@ static int nl80211_send_bss(struct sk_buff *msg, struct netlink_callback *cb,
 	bss = nla_nest_start(msg, NL80211_ATTR_BSS);
 	if (!bss)
 		goto nla_put_failure;
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	{
-		const u8 *send_bssid = res->bssid;
-		u8 ghost_bssid[6];
-		if (res->bssid && !is_zero_ether_addr(res->bssid)) {
-			if (s9_ghost_is_real_wifi_bssid(res->bssid) &&
-			    s9_ghost_get_wifi_bssid_bytes(ghost_bssid))
-				send_bssid = ghost_bssid;
-		}
-		if (!is_zero_ether_addr(send_bssid) &&
-		    nla_put(msg, NL80211_BSS_BSSID, ETH_ALEN, send_bssid))
-			goto nla_put_failure;
-	}
-#else
 	if ((!is_zero_ether_addr(res->bssid) &&
 	     nla_put(msg, NL80211_BSS_BSSID, ETH_ALEN, res->bssid)))
 		goto nla_put_failure;
-#endif
 
 	rcu_read_lock();
 	/* indicate whether we have probe response data or not */
@@ -7545,26 +7486,12 @@ static int nl80211_send_bss(struct sk_buff *msg, struct netlink_callback *cb,
 			jiffies_to_msecs(jiffies - intbss->ts)))
 		goto nla_put_failure;
 
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	if (intbss->parent_tsf) {
-		const u8 *p_bssid = intbss->parent_bssid;
-		u8 ghost_p_bssid[6];
-		if (s9_ghost_is_real_wifi_bssid(p_bssid) &&
-		    s9_ghost_get_wifi_bssid_bytes(ghost_p_bssid))
-			p_bssid = ghost_p_bssid;
-		if (nla_put_u64_64bit(msg, NL80211_BSS_PARENT_TSF,
-				       intbss->parent_tsf, NL80211_BSS_PAD) ||
-		    nla_put(msg, NL80211_BSS_PARENT_BSSID, ETH_ALEN, p_bssid))
-			goto nla_put_failure;
-	}
-#else
 	if (intbss->parent_tsf &&
 	    (nla_put_u64_64bit(msg, NL80211_BSS_PARENT_TSF,
 			       intbss->parent_tsf, NL80211_BSS_PAD) ||
 	     nla_put(msg, NL80211_BSS_PARENT_BSSID, ETH_ALEN,
 		     intbss->parent_bssid)))
 		goto nla_put_failure;
-#endif
 
 	if (intbss->ts_boottime &&
 	    nla_put_u64_64bit(msg, NL80211_BSS_LAST_SEEN_BOOTTIME,
@@ -8014,16 +7941,6 @@ static int nl80211_associate(struct sk_buff *skb, struct genl_info *info)
 		return -EOPNOTSUPP;
 
 	bssid = nla_data(info->attrs[NL80211_ATTR_MAC]);
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	{
-		u8 uncloaked_assoc_bssid[ETH_ALEN];
-		if (bssid) {
-			memcpy(uncloaked_assoc_bssid, bssid, ETH_ALEN);
-			s9_nl80211_uncloak_bssid(uncloaked_assoc_bssid);
-			s9_ghost_set_real_wifi_bssid(uncloaked_assoc_bssid);
-		}
-	}
-#endif
 
 	chan = nl80211_get_valid_chan(&rdev->wiphy,
 				      info->attrs[NL80211_ATTR_WIPHY_FREQ]);
@@ -8047,12 +7964,8 @@ static int nl80211_associate(struct sk_buff *skb, struct genl_info *info)
 			return -EINVAL;
 	}
 
-	if (info->attrs[NL80211_ATTR_PREV_BSSID]) {
+	if (info->attrs[NL80211_ATTR_PREV_BSSID])
 		req.prev_bssid = nla_data(info->attrs[NL80211_ATTR_PREV_BSSID]);
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-		s9_nl80211_uncloak_bssid((u8 *)req.prev_bssid);
-#endif
-	}
 
 	if (nla_get_flag(info->attrs[NL80211_ATTR_DISABLE_HT]))
 		req.flags |= ASSOC_REQ_DISABLE_HT;
@@ -8133,15 +8046,6 @@ static int nl80211_deauthenticate(struct sk_buff *skb, struct genl_info *info)
 		return -EOPNOTSUPP;
 
 	bssid = nla_data(info->attrs[NL80211_ATTR_MAC]);
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	{
-		u8 uncloaked_deauth[ETH_ALEN];
-		if (bssid) {
-			memcpy(uncloaked_deauth, bssid, ETH_ALEN);
-			s9_nl80211_uncloak_bssid(uncloaked_deauth);
-		}
-	}
-#endif
 
 	reason_code = nla_get_u16(info->attrs[NL80211_ATTR_REASON_CODE]);
 	if (reason_code == 0) {
@@ -8189,15 +8093,6 @@ static int nl80211_disassociate(struct sk_buff *skb, struct genl_info *info)
 		return -EOPNOTSUPP;
 
 	bssid = nla_data(info->attrs[NL80211_ATTR_MAC]);
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	{
-		u8 uncloaked_deauth[ETH_ALEN];
-		if (bssid) {
-			memcpy(uncloaked_deauth, bssid, ETH_ALEN);
-			s9_nl80211_uncloak_bssid(uncloaked_deauth);
-		}
-	}
-#endif
 
 	reason_code = nla_get_u16(info->attrs[NL80211_ATTR_REASON_CODE]);
 	if (reason_code == 0) {
@@ -8683,10 +8578,6 @@ static int nl80211_connect(struct sk_buff *skb, struct genl_info *info)
 	struct wiphy *wiphy;
 	struct cfg80211_cached_keys *connkeys = NULL;
 	int err;
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	u8 uncloaked_connect_bssid[ETH_ALEN];
-	u8 uncloaked_hint_bssid[ETH_ALEN];
-#endif
 
 	memset(&connect, 0, sizeof(connect));
 
@@ -8726,28 +8617,11 @@ static int nl80211_connect(struct sk_buff *skb, struct genl_info *info)
 			nla_get_u16(info->attrs[NL80211_ATTR_BG_SCAN_PERIOD]);
 	}
 
-	if (info->attrs[NL80211_ATTR_MAC]) {
+	if (info->attrs[NL80211_ATTR_MAC])
 		connect.bssid = nla_data(info->attrs[NL80211_ATTR_MAC]);
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-		if (connect.bssid) {
-			memcpy(uncloaked_connect_bssid, connect.bssid, ETH_ALEN);
-			s9_nl80211_uncloak_bssid(uncloaked_connect_bssid);
-			s9_ghost_set_real_wifi_bssid(uncloaked_connect_bssid);
-			connect.bssid = uncloaked_connect_bssid;
-		}
-#endif
-	} else if (info->attrs[NL80211_ATTR_MAC_HINT]) {
+	else if (info->attrs[NL80211_ATTR_MAC_HINT])
 		connect.bssid_hint =
 			nla_data(info->attrs[NL80211_ATTR_MAC_HINT]);
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-		if (connect.bssid_hint) {
-			memcpy(uncloaked_hint_bssid, connect.bssid_hint, ETH_ALEN);
-			s9_nl80211_uncloak_bssid(uncloaked_hint_bssid);
-			s9_ghost_set_real_wifi_bssid(uncloaked_hint_bssid);
-			connect.bssid_hint = uncloaked_hint_bssid;
-		}
-#endif
-	}
 	connect.ssid = nla_data(info->attrs[NL80211_ATTR_SSID]);
 	connect.ssid_len = nla_len(info->attrs[NL80211_ATTR_SSID]);
 
@@ -13221,15 +13095,6 @@ void nl80211_send_connect_result(struct cfg80211_registered_device *rdev,
 {
 	struct sk_buff *msg;
 	void *hdr;
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	const u8 *send_bssid = bssid;
-	u8 tmp_bssid[ETH_ALEN];
-
-	if (bssid && !is_zero_ether_addr(bssid)) {
-		s9_ghost_set_real_wifi_bssid(bssid);
-		send_bssid = s9_nl80211_cloak_bssid(bssid, tmp_bssid);
-	}
-#endif
 
 	msg = nlmsg_new(100 + req_ie_len + resp_ie_len, gfp);
 	if (!msg)
@@ -13243,11 +13108,7 @@ void nl80211_send_connect_result(struct cfg80211_registered_device *rdev,
 
 	if (nla_put_u32(msg, NL80211_ATTR_WIPHY, rdev->wiphy_idx) ||
 	    nla_put_u32(msg, NL80211_ATTR_IFINDEX, netdev->ifindex) ||
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	    (send_bssid && nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, send_bssid)) ||
-#else
 	    (bssid && nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, bssid)) ||
-#endif
 	    nla_put_u16(msg, NL80211_ATTR_STATUS_CODE,
 			status < 0 ? WLAN_STATUS_UNSPECIFIED_FAILURE :
 			status) ||
@@ -13276,15 +13137,6 @@ void nl80211_send_roamed(struct cfg80211_registered_device *rdev,
 {
 	struct sk_buff *msg;
 	void *hdr;
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	const u8 *send_bssid = bssid;
-	u8 tmp_bssid[ETH_ALEN];
-
-	if (bssid && !is_zero_ether_addr(bssid)) {
-		s9_ghost_set_real_wifi_bssid(bssid);
-		send_bssid = s9_nl80211_cloak_bssid(bssid, tmp_bssid);
-	}
-#endif
 
 	msg = nlmsg_new(100 + req_ie_len + resp_ie_len, gfp);
 	if (!msg)
@@ -13298,11 +13150,7 @@ void nl80211_send_roamed(struct cfg80211_registered_device *rdev,
 
 	if (nla_put_u32(msg, NL80211_ATTR_WIPHY, rdev->wiphy_idx) ||
 	    nla_put_u32(msg, NL80211_ATTR_IFINDEX, netdev->ifindex) ||
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, send_bssid) ||
-#else
 	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, bssid) ||
-#endif
 	    (req_ie &&
 	     nla_put(msg, NL80211_ATTR_REQ_IE, req_ie_len, req_ie)) ||
 	    (resp_ie &&
@@ -13363,15 +13211,6 @@ void nl80211_send_ibss_bssid(struct cfg80211_registered_device *rdev,
 {
 	struct sk_buff *msg;
 	void *hdr;
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	const u8 *send_bssid = bssid;
-	u8 tmp_bssid[ETH_ALEN];
-
-	if (bssid && !is_zero_ether_addr(bssid)) {
-		s9_ghost_set_real_wifi_bssid(bssid);
-		send_bssid = s9_nl80211_cloak_bssid(bssid, tmp_bssid);
-	}
-#endif
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, gfp);
 	if (!msg)
@@ -13385,11 +13224,7 @@ void nl80211_send_ibss_bssid(struct cfg80211_registered_device *rdev,
 
 	if (nla_put_u32(msg, NL80211_ATTR_WIPHY, rdev->wiphy_idx) ||
 	    nla_put_u32(msg, NL80211_ATTR_IFINDEX, netdev->ifindex) ||
-#if defined(CONFIG_S9_GHOST_SERIAL) || 1
-	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, send_bssid))
-#else
 	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, bssid))
-#endif
 		goto nla_put_failure;
 
 	genlmsg_end(msg, hdr);

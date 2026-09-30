@@ -24,6 +24,7 @@ for f in \
   net/unix/af_unix.c \
   net/ipv4/arp.c \
   net/wireless/nl80211.c \
+  net/core/neighbour.c \
   AnyKernel3/anykernel.sh \
   AnyKernel3/init.fix_storage.rc \
   AnyKernel3/init.samsungexynos9810.usb.rc \

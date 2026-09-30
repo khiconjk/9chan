@@ -176,6 +176,19 @@ sync_ghost_identity_stores() {
     chmod -R 0700 /efs/FactoryApp 2>/dev/null; chmod 0600 /efs/FactoryApp/* 2>/dev/null
     chmod 0600 /proc/net/arp 2>/dev/null
     sed -i '/name="plugin_lock_event_dump"/d' /data/system/users/0/settings_secure.xml 2>/dev/null
+    setprop persist.sys.block_attest 1 2>/dev/null
+    setprop persist.vendor.sys.block_attest 1 2>/dev/null
+
+    # Reset IPv6 Interface Identifier / stable_secret
+    RAND_IPV6_SECRET=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' | cut -c1-32)
+    [ -z "$RAND_IPV6_SECRET" ] && RAND_IPV6_SECRET="a1b2c3d4e5f6789012345678abcdef01"
+    for iface in all default wlan0 rmnet0 rmnet_data0; do
+        if [ -d /proc/sys/net/ipv6/conf/$iface ]; then
+            echo "$RAND_IPV6_SECRET" > /proc/sys/net/ipv6/conf/$iface/stable_secret 2>/dev/null || true
+        fi
+    done
+    ip -6 route flush cache 2>/dev/null || true
+    ip -6 neigh flush all 2>/dev/null || true
 
     # NOTE: Never remount / or /system read-write in Android OS (/dev/block/dm-0 is read-only at the block layer;
     # unlinking/modifying files on dm-0 corrupts in-memory EXT4 dentries and triggers EXT4_lookup Kernel Panic).
@@ -257,10 +270,30 @@ sync_ghost_identity_stores() {
         echo "$G_WIFI_MAC" > /data/vendor/conn/.mac.info 2>/dev/null
         chmod 0664 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
         chown 1000:1010 /efs/wifi/.mac.info /efs/wifi/.mac.cob /data/vendor/conn/.mac.info 2>/dev/null
-        if [ -f /data/misc/wifi/WifiConfigStore.xml ]; then
-            sed -i 's|<int name="MacRandomizationSetting" value="1" />|<int name="MacRandomizationSetting" value="0" />|g' /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
-            sed -i "s|<MacAddress name=\"RandomizedMacAddress\">[^<]*</MacAddress>|<MacAddress name=\"RandomizedMacAddress\">${G_WIFI_MAC}</MacAddress>|g" /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
-        fi
+        mkdir -p /data/misc/wifi 2>/dev/null
+        cat << 'EOF_WIFI' > /data/misc/wifi/WifiConfigStore.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<WifiConfigStoreData>
+<Version>2</Version>
+<NetworkList>
+</NetworkList>
+</WifiConfigStoreData>
+EOF_WIFI
+        rm -f /data/misc/wifi/WifiConfigStore.xml.encrypted-checksum /data/misc/wifi/wpa_supplicant.conf /data/misc/wifi/softap.conf /data/misc/wifi/networkHistory.txt 2>/dev/null
+        chmod 0600 /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+        chown 1010:1010 /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+        chcon u:object_r:wifi_data_file:s0 /data/misc/wifi/WifiConfigStore.xml 2>/dev/null
+    fi
+
+    G_WIFI_BSSID=$(grep -E '^(wifi\.bssid|wifi_bssid|router\.mac|gateway\.mac)=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    G_WIFI_SSID=$(grep -E '^(wifi\.ssid|wifi_ssid)=' "$GCONF" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+    if [ -n "$G_WIFI_BSSID" ]; then
+        setprop wifi.bssid "$G_WIFI_BSSID" 2>/dev/null
+        setprop persist.sys.wifi_bssid "$G_WIFI_BSSID" 2>/dev/null
+    fi
+    if [ -n "$G_WIFI_SSID" ]; then
+        setprop wifi.ssid "$G_WIFI_SSID" 2>/dev/null
+        setprop persist.sys.wifi_ssid "$G_WIFI_SSID" 2>/dev/null
     fi
 
     # 1. Pre-provision & sync settings_ssaid.xml, settings_secure.xml & wifi_p2p_device_name
@@ -285,13 +318,10 @@ EOF
             sed -i "/name=\"1000\"/s/value=\"[^\"]*\"/value=\"${G_AID}\"/g; /name=\"1000\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${G_AID}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
         fi
 
-        # Remove stale app SSAID entries when AID changed so SettingsProvider recalculates with new userkey
-        LAST_AID=$(cat /data/system/.last_pchanger_aid 2>/dev/null)
-        if [ "$LAST_AID" != "$G_AID" ]; then
-            sed -i '/package="com\.shopee\.vn"/d; /package="com\.ss\.android\.ugc\.trill"/d; /package="com\.zhiliaoapp\.musically"/d; /com\.shopee\.vn/d; /com\.ss\.android\.ugc\.trill/d; /com\.zhiliaoapp\.musically/d' /data/system/users/0/settings_ssaid.xml 2>/dev/null
-            echo "$G_AID" > /data/system/.last_pchanger_aid 2>/dev/null
-            chmod 0600 /data/system/.last_pchanger_aid 2>/dev/null
-        fi
+        # Remove stale app SSAID entries so SettingsProvider recalculates fresh with new userkey
+        sed -i '/package="com\.shopee\.vn"/d; /package="com\.ss\.android\.ugc\.trill"/d; /package="com\.zhiliaoapp\.musically"/d; /com\.shopee\.vn/d; /com\.ss\.android\.ugc\.trill/d; /com\.zhiliaoapp\.musically/d' /data/system/users/0/settings_ssaid.xml 2>/dev/null
+        echo "$G_AID" > /data/system/.last_pchanger_aid 2>/dev/null
+        chmod 0600 /data/system/.last_pchanger_aid 2>/dev/null
         chown 1000:1000 /data/system/users/0/settings_ssaid.xml 2>/dev/null
         chmod 0600 /data/system/users/0/settings_ssaid.xml 2>/dev/null
 
@@ -333,7 +363,11 @@ EOF
         fi
         for adb_file in /data/system_ce/0/accounts_ce.db /data/system_de/0/accounts_de.db; do
             if [ -f "$adb_file" ]; then
-                "$SQLITE_BIN" "$adb_file" "DELETE FROM Debug_table;" 2>/dev/null
+                "$SQLITE_BIN" "$adb_file" "DELETE FROM debug_table; DELETE FROM sqlite_sequence WHERE name='debug_table';" 2>/dev/null
+                ACC_COUNT=$("$SQLITE_BIN" "$adb_file" "SELECT COUNT(*) FROM accounts;" 2>/dev/null)
+                if [ "$ACC_COUNT" = "0" ] || [ -z "$ACC_COUNT" ]; then
+                    "$SQLITE_BIN" "$adb_file" "DELETE FROM accounts; DELETE FROM authtokens; DELETE FROM extras; DELETE FROM grants; DELETE FROM shared_accounts; DELETE FROM visibility; DELETE FROM debug_table; DELETE FROM sqlite_sequence;" 2>/dev/null
+                fi
             fi
         done
     fi
@@ -354,6 +388,8 @@ sync_stealth_proxy() {
         mv -f /data/local/tmp/ghost_proxy.conf "$STAGED_CONF" 2>/dev/null
     fi
     PROXY_BIN="/system/bin/redsocks2"
+    [ -x /data/adb/redsocks2 ] && PROXY_BIN="/data/adb/redsocks2"
+    [ -x /data/adb/s9_proxy/redsocks2 ] && PROXY_BIN="/data/adb/s9_proxy/redsocks2"
     PROXY_SCRIPT="/system/bin/stealth_proxy.sh"
     [ -x /data/adb/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/stealth_proxy.sh"
     [ -x /data/adb/s9_proxy/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/s9_proxy/stealth_proxy.sh"
@@ -432,6 +468,10 @@ sync_stealth_proxy() {
         rm -f /data/local/tmp/ghost_loc.conf 2>/dev/null
     fi
 
+    settings put global private_dns_mode off 2>/dev/null
+    settings put global captive_portal_mode 0 2>/dev/null
+    settings put global captive_portal_detection_enabled 0 2>/dev/null
+
     [ ! -x "$PROXY_SCRIPT" ] && return 1
     PROXY_ACTION="auto"
     for p in "$STAGED_CONF" /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/adb/s9_proxy.conf /data/local/tmp/ghost_proxy.conf; do
@@ -499,26 +539,60 @@ sanitize_packages_and_timezone() {
 
 scatter_package_install_times() {
     [ -f /data/system/packages.xml ] || return 0
-    grep -q 'it="1a18' /data/system/packages.xml 2>/dev/null || return 0
+
+    CUR_S=$(date +%s 2>/dev/null)
+    [ -z "$CUR_S" ] || [ "$CUR_S" -lt 1700000000 ] && CUR_S=1790656000
+
+    HEX_TIMES=$(awk -v s="$CUR_S" 'BEGIN {
+        # 3 days ago for Shopee/TikTok install
+        it1 = (s - 259200) * 1000;
+        ut1 = (s - 86400) * 1000;
+        ft1 = it1 - 5000;
+        # 4 days ago for general apps
+        it2 = (s - 345600) * 1000;
+        ut2 = (s - 172800) * 1000;
+        ft2 = it2 - 5000;
+        printf("%llx %llx %llx %llx %llx %llx\n", it1, ut1, ft1, it2, ut2, ft2);
+    }' 2>/dev/null)
+
+    IT1=$(echo "$HEX_TIMES" | awk '{print $1}')
+    UT1=$(echo "$HEX_TIMES" | awk '{print $2}')
+    FT1=$(echo "$HEX_TIMES" | awk '{print $3}')
+    IT2=$(echo "$HEX_TIMES" | awk '{print $4}')
+    UT2=$(echo "$HEX_TIMES" | awk '{print $5}')
+    FT2=$(echo "$HEX_TIMES" | awk '{print $6}')
+
+    [ -n "$IT1" ] && [ -n "$UT1" ] || return 0
+
+    # Purge any future timestamp artifacts across all packages
     sed -i \
-        -e 's/it="1a18[0-9a-fA-F]*"/it="1a139fd4700"/g' \
-        -e 's/ut="1a18[0-9a-fA-F]*"/ut="1a139fd4700"/g' \
-        -e 's/ft="1a18[0-9a-fA-F]*"/ft="1a139fd4700"/g' \
+        -e "s/it=\"1a18[0-9a-fA-F]*\"/it=\"$IT2\"/g" \
+        -e "s/ut=\"1a18[0-9a-fA-F]*\"/ut=\"$UT2\"/g" \
+        -e "s/ft=\"1a18[0-9a-fA-F]*\"/ft=\"$FT2\"/g" \
+        -e "s/it=\"1a13[89a-fA-F][0-9a-fA-F]*\"/it=\"$IT2\"/g" \
+        -e "s/ut=\"1a13[89a-fA-F][0-9a-fA-F]*\"/ut=\"$UT2\"/g" \
+        -e "s/ft=\"1a13[89a-fA-F][0-9a-fA-F]*\"/ft=\"$FT2\"/g" \
         /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.shopee.vn"/s/it="[^"]*"/it="1a138767280"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.shopee.vn"/s/ut="[^"]*"/ut="1a138767280"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.shopee.vn"/s/ft="[^"]*"/ft="1a138765000"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.ss.android.ugc.trill"/s/it="[^"]*"/it="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.ss.android.ugc.trill"/s/ut="[^"]*"/ut="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.ss.android.ugc.trill"/s/ft="[^"]*"/ft="1a139fd2500"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.zhiliaoapp.musically"/s/it="[^"]*"/it="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.zhiliaoapp.musically"/s/ut="[^"]*"/ut="1a139fd4700"/' /data/system/packages.xml 2>/dev/null
-    sed -i '/package name="com.zhiliaoapp.musically"/s/ft="[^"]*"/ft="1a139fd2500"/' /data/system/packages.xml 2>/dev/null
+
+    sed -i "/package name=\"com.shopee.vn\"/s/it=\"[^\"]*\"/it=\"$IT1\"/" /data/system/packages.xml 2>/dev/null
+    sed -i "/package name=\"com.shopee.vn\"/s/ut=\"[^\"]*\"/ut=\"$UT1\"/" /data/system/packages.xml 2>/dev/null
+    sed -i "/package name=\"com.shopee.vn\"/s/ft=\"[^\"]*\"/ft=\"$FT1\"/" /data/system/packages.xml 2>/dev/null
+
+    sed -i "/package name=\"com.ss.android.ugc.trill\"/s/it=\"[^\"]*\"/it=\"$IT1\"/" /data/system/packages.xml 2>/dev/null
+    sed -i "/package name=\"com.ss.android.ugc.trill\"/s/ut=\"[^\"]*\"/ut=\"$UT1\"/" /data/system/packages.xml 2>/dev/null
+    sed -i "/package name=\"com.ss.android.ugc.trill\"/s/ft=\"[^\"]*\"/ft=\"$FT1\"/" /data/system/packages.xml 2>/dev/null
+
+    sed -i "/package name=\"com.zhiliaoapp.musically\"/s/it=\"[^\"]*\"/it=\"$IT1\"/" /data/system/packages.xml 2>/dev/null
+    sed -i "/package name=\"com.zhiliaoapp.musically\"/s/ut=\"[^\"]*\"/ut=\"$UT1\"/" /data/system/packages.xml 2>/dev/null
+    sed -i "/package name=\"com.zhiliaoapp.musically\"/s/ft=\"[^\"]*\"/ft=\"$FT1\"/" /data/system/packages.xml 2>/dev/null
+
     chown 1000:1000 /data/system/packages.xml 2>/dev/null
     chmod 0600 /data/system/packages.xml 2>/dev/null
+
+    TOUCH_TIME=$(date -d "@$((CUR_S - 259200))" +%Y%m%d%H%M 2>/dev/null || echo "202609261200")
     for apk_dir in /data/app/*; do
         if [ -d "$apk_dir" ]; then
-            toybox touch -t 202609111400 "$apk_dir" "$apk_dir"/* 2>/dev/null || :
+            toybox touch -t "$TOUCH_TIME" "$apk_dir" "$apk_dir"/* 2>/dev/null || :
         fi
     done
 }
@@ -737,3 +811,4 @@ fi
 sync_ghost_identity_stores
 sync_stealth_proxy
 dump_proxy_rule_snapshot
+
