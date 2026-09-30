@@ -179,16 +179,27 @@ sync_ghost_identity_stores() {
     setprop persist.sys.block_attest 1 2>/dev/null
     setprop persist.vendor.sys.block_attest 1 2>/dev/null
 
-    # Reset IPv6 Interface Identifier / stable_secret
+    # Rotate persist.netd.stable_secret & Disable IPv6 across all interfaces
     RAND_IPV6_SECRET=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' | cut -c1-32)
     [ -z "$RAND_IPV6_SECRET" ] && RAND_IPV6_SECRET="a1b2c3d4e5f6789012345678abcdef01"
-    for iface in all default wlan0 rmnet0 rmnet_data0; do
+    setprop persist.netd.stable_secret "$RAND_IPV6_SECRET" 2>/dev/null
+    for iface in all default wlan0 rmnet0 rmnet1 rmnet_data0 rmnet_data1 rmnet_data2; do
         if [ -d /proc/sys/net/ipv6/conf/$iface ]; then
             echo "$RAND_IPV6_SECRET" > /proc/sys/net/ipv6/conf/$iface/stable_secret 2>/dev/null || true
+            echo 1 > /proc/sys/net/ipv6/conf/$iface/disable_ipv6 2>/dev/null || true
         fi
     done
     ip -6 route flush cache 2>/dev/null || true
     ip -6 neigh flush all 2>/dev/null || true
+
+    # Seed Samsung OAID if empty
+    OAID_PROP=$(getprop persist.samsung.oaid 2>/dev/null)
+    if [ -z "$OAID_PROP" ]; then
+        GEN_OAID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+        [ -z "$GEN_OAID" ] && GEN_OAID="a1b2c3d4-e5f6-7890-1234-5678abcdef01"
+        setprop persist.samsung.oaid "$GEN_OAID" 2>/dev/null
+        setprop ro.samsung.oaid "$GEN_OAID" 2>/dev/null
+    fi
 
     # NOTE: Never remount / or /system read-write in Android OS (/dev/block/dm-0 is read-only at the block layer;
     # unlinking/modifying files on dm-0 corrupts in-memory EXT4 dentries and triggers EXT4_lookup Kernel Panic).
