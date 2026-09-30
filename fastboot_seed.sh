@@ -381,8 +381,33 @@ EOF
                 fi
             fi
         done
+    # 3. Provision Google Advertising ID (GAID) in adid_settings.xml & Unfreeze Telemetry/Ads
+    if [ -d /data/data/com.google.android.gms ]; then
+        GMS_UID=$(stat -c "%u" /data/data/com.google.android.gms 2>/dev/null)
+        [ -z "$GMS_UID" ] && GMS_UID=10074
+        mkdir -p /data/data/com.google.android.gms/shared_prefs 2>/dev/null
+        GAID_GEN=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr '[:upper:]' '[:lower:]')
+        [ -z "$GAID_GEN" ] && GAID_GEN="a1b2c3d4-e5f6-7890-1234-5678abcdef01"
+        cat << EOF > /data/data/com.google.android.gms/shared_prefs/adid_settings.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="adid_key">${GAID_GEN}</string>
+    <boolean name="enable_limit_ad_tracking" value="false" />
+</map>
+EOF
+        chown -R $GMS_UID:$GMS_UID /data/data/com.google.android.gms/shared_prefs 2>/dev/null
+        chmod 0771 /data/data/com.google.android.gms/shared_prefs 2>/dev/null
+        chmod 0660 /data/data/com.google.android.gms/shared_prefs/adid_settings.xml 2>/dev/null
+        chcon u:object_r:app_data_file:s0 /data/data/com.google.android.gms/shared_prefs/adid_settings.xml 2>/dev/null
     fi
 
+    # 4. Un-freeze Telemetry, Ads & Measurement Services (prevents API_DISABLED)
+    pm enable com.google.android.gms/com.google.android.gms.ads.identifier.service.AdvertisingIdService 2>/dev/null || true
+    pm enable com.google.android.gms/com.google.android.gms.common.telemetry.TelemetryService 2>/dev/null || true
+    pm enable com.google.android.gms/com.google.android.gms.measurement.service.MeasurementBrokerService 2>/dev/null || true
+    for p in ACCESS_NETWORK_STATE ACCESS_WIFI_STATE ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION READ_PHONE_STATE BODY_SENSORS ACTIVITY_RECOGNITION; do
+        pm grant com.google.android.gms android.permission.$p 2>/dev/null || true
+    done
 }
 
 sync_stealth_proxy() {
