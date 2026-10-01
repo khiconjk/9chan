@@ -1,5 +1,6 @@
 #!/system/bin/sh
 # Fast First-Boot & Headless Always-On ADB Seed Engine (Runs at post-fs-data & boot_completed as root)
+# GHOST_SEED_V2026_10_01_KEYSTORE_FIX
 
 sync_persistent_clock() {
     CUR_EPOCH=$(date +%s 2>/dev/null)
@@ -171,8 +172,6 @@ sync_ghost_identity_stores() {
            /data/local/tmp/check_new_user.sh /data/local/tmp/dalvik-cache /data/local/tmp/fix.sh* \
            /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* \
            /data/misc/bootstat/* /sdcard/Android/data/*/files/anr/* /data/media/0/Android/data/*/files/anr/* 2>/dev/null
-    # Clean stale app Keystore certificates (UID >= 10000) & lock history
-    find /data/misc/keystore/user_0/ -type f -delete 2>/dev/null
     chmod -R 0700 /efs/FactoryApp 2>/dev/null; chmod 0600 /efs/FactoryApp/* 2>/dev/null
     chmod 0600 /proc/net/arp 2>/dev/null
     sed -i '/name="plugin_lock_event_dump"/d' /data/system/users/0/settings_secure.xml 2>/dev/null
@@ -325,12 +324,15 @@ EOF_WIFI
 </settings>
 EOF
         else
-            sed -i "/name=\"userkey\"/s/value=\"[^\"]*\"/value=\"${UKEY}\"/g; /name=\"userkey\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${UKEY}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
-            sed -i "/name=\"1000\"/s/value=\"[^\"]*\"/value=\"${G_AID}\"/g; /name=\"1000\"/s/defaultValue=\"[^\"]*\"/defaultValue=\"${G_AID}\"/g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
+            if ! grep -q 'name="userkey"' /data/system/users/0/settings_ssaid.xml 2>/dev/null; then
+                sed -i "s|</settings>|  <setting id=\"0\" name=\"userkey\" value=\"${UKEY}\" package=\"android\" defaultValue=\"${UKEY}\" defaultSysSet=\"true\" tag=\"null\" />\n</settings>|g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
+            fi
+            if ! grep -q 'name="1000"' /data/system/users/0/settings_ssaid.xml 2>/dev/null; then
+                sed -i "s|</settings>|  <setting id=\"1\" name=\"1000\" value=\"${G_AID}\" package=\"android\" defaultValue=\"${G_AID}\" defaultSysSet=\"true\" tag=\"null\" />\n</settings>|g" /data/system/users/0/settings_ssaid.xml 2>/dev/null
+            fi
         fi
 
-        # Remove stale app SSAID entries so SettingsProvider recalculates fresh with new userkey
-        sed -i '/package="com\.shopee\.vn"/d; /package="com\.ss\.android\.ugc\.trill"/d; /package="com\.zhiliaoapp\.musically"/d; /com\.shopee\.vn/d; /com\.ss\.android\.ugc\.trill/d; /com\.zhiliaoapp\.musically/d' /data/system/users/0/settings_ssaid.xml 2>/dev/null
+        # Preserve app SSAIDs so apps (Shopee, TikTok) retain their login sessions across boots
         echo "$G_AID" > /data/system/.last_pchanger_aid 2>/dev/null
         chmod 0600 /data/system/.last_pchanger_aid 2>/dev/null
         chown 1000:1000 /data/system/users/0/settings_ssaid.xml 2>/dev/null
@@ -375,12 +377,9 @@ EOF
         for adb_file in /data/system_ce/0/accounts_ce.db /data/system_de/0/accounts_de.db; do
             if [ -f "$adb_file" ]; then
                 "$SQLITE_BIN" "$adb_file" "DELETE FROM debug_table; DELETE FROM sqlite_sequence WHERE name='debug_table';" 2>/dev/null
-                ACC_COUNT=$("$SQLITE_BIN" "$adb_file" "SELECT COUNT(*) FROM accounts;" 2>/dev/null)
-                if [ "$ACC_COUNT" = "0" ] || [ -z "$ACC_COUNT" ]; then
-                    "$SQLITE_BIN" "$adb_file" "DELETE FROM accounts; DELETE FROM authtokens; DELETE FROM extras; DELETE FROM grants; DELETE FROM shared_accounts; DELETE FROM visibility; DELETE FROM debug_table; DELETE FROM sqlite_sequence;" 2>/dev/null
-                fi
             fi
         done
+    fi
     # 3. Provision Google Advertising ID (GAID) in adid_settings.xml & Unfreeze Telemetry/Ads
     if [ -d /data/data/com.google.android.gms ]; then
         GMS_UID=$(stat -c "%u" /data/data/com.google.android.gms 2>/dev/null)
