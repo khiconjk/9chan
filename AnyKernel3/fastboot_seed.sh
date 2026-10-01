@@ -576,55 +576,94 @@ scatter_package_install_times() {
     [ -f /data/system/packages.xml ] || return 0
 
     CUR_S=$(date +%s 2>/dev/null)
-    [ -z "$CUR_S" ] || [ "$CUR_S" -lt 1700000000 ] && CUR_S=1790656000
+    [ -z "$CUR_S" ] || [ "$CUR_S" -lt 1700000000 ] && CUR_S=1790858000
 
-    HEX_TIMES=$(awk -v s="$CUR_S" 'BEGIN {
-        # 3 days ago for Shopee/TikTok install
-        it1 = (s - 259200) * 1000;
-        ut1 = (s - 86400) * 1000;
-        ft1 = it1 - 5000;
-        # 4 days ago for general apps
-        it2 = (s - 345600) * 1000;
-        ut2 = (s - 172800) * 1000;
-        ft2 = it2 - 5000;
-        printf("%llx %llx %llx %llx %llx %llx\n", it1, ut1, ft1, it2, ut2, ft2);
+    # 1. Read app.install_offset_sec from ghost.conf if present (5h-12h = 18000s - 43200s)
+    SAVED_OFFSET=""
+    GCONF_TARGET=""
+    for cf in /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf; do
+        if [ -f "$cf" ]; then
+            SAVED_OFFSET=$(grep -E '^(app\.install_offset_sec|install_offset_sec)=' "$cf" 2>/dev/null | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+            GCONF_TARGET="$cf"
+            [ -n "$SAVED_OFFSET" ] && break
+        fi
+    done
+
+    # If missing or invalid, generate random offset between 18000s (5h) and 43200s (12h)
+    if [ -z "$SAVED_OFFSET" ] || [ "$SAVED_OFFSET" -lt 18000 ] 2>/dev/null || [ "$SAVED_OFFSET" -gt 43200 ] 2>/dev/null; then
+        SAVED_OFFSET=$(awk 'BEGIN { srand(); printf("%d\n", 18000 + int(rand() * 25201)); }' 2>/dev/null)
+        [ -z "$SAVED_OFFSET" ] && SAVED_OFFSET=$((18000 + (CUR_S % 25200)))
+        if [ -n "$GCONF_TARGET" ] && [ -w "$GCONF_TARGET" ]; then
+            if grep -q 'app.install_offset_sec=' "$GCONF_TARGET" 2>/dev/null; then
+                sed -i "s/^app\.install_offset_sec=.*/app.install_offset_sec=$SAVED_OFFSET/" "$GCONF_TARGET" 2>/dev/null
+            else
+                echo "app.install_offset_sec=$SAVED_OFFSET" >> "$GCONF_TARGET" 2>/dev/null
+            fi
+        fi
+    fi
+
+    HEX_TIMES=$(awk -v s="$CUR_S" -v off="$SAVED_OFFSET" 'BEGIN {
+        # Base install time for Shopee: current time minus random 5h-12h
+        it1 = (s - off) * 1000;
+        ut1 = it1; # Fresh install has ut == it
+        ft1 = it1 - 3000;
+
+        # TikTok installed ~8 minutes after Shopee
+        it_tt = (s - off + 480) * 1000;
+        ut_tt = it_tt;
+        ft_tt = it_tt - 3000;
+
+        # General apps installed ~25 minutes before
+        it2 = (s - off - 1500) * 1000;
+        ut2 = it2;
+        ft2 = it2 - 3000;
+
+        printf("%llx %llx %llx %llx %llx %llx %llx %llx %llx\n", it1, ut1, ft1, it_tt, ut_tt, ft_tt, it2, ut2, ft2);
     }' 2>/dev/null)
 
     IT1=$(echo "$HEX_TIMES" | awk '{print $1}')
     UT1=$(echo "$HEX_TIMES" | awk '{print $2}')
     FT1=$(echo "$HEX_TIMES" | awk '{print $3}')
-    IT2=$(echo "$HEX_TIMES" | awk '{print $4}')
-    UT2=$(echo "$HEX_TIMES" | awk '{print $5}')
-    FT2=$(echo "$HEX_TIMES" | awk '{print $6}')
+    IT_TT=$(echo "$HEX_TIMES" | awk '{print $4}')
+    UT_TT=$(echo "$HEX_TIMES" | awk '{print $5}')
+    FT_TT=$(echo "$HEX_TIMES" | awk '{print $6}')
+    IT2=$(echo "$HEX_TIMES" | awk '{print $7}')
+    UT2=$(echo "$HEX_TIMES" | awk '{print $8}')
+    FT2=$(echo "$HEX_TIMES" | awk '{print $9}')
 
     [ -n "$IT1" ] && [ -n "$UT1" ] || return 0
 
-    # Purge any future timestamp artifacts across all packages
-    sed -i \
-        -e "s/it=\"1a18[0-9a-fA-F]*\"/it=\"$IT2\"/g" \
-        -e "s/ut=\"1a18[0-9a-fA-F]*\"/ut=\"$UT2\"/g" \
-        -e "s/ft=\"1a18[0-9a-fA-F]*\"/ft=\"$FT2\"/g" \
-        -e "s/it=\"1a13[89a-fA-F][0-9a-fA-F]*\"/it=\"$IT2\"/g" \
-        -e "s/ut=\"1a13[89a-fA-F][0-9a-fA-F]*\"/ut=\"$UT2\"/g" \
-        -e "s/ft=\"1a13[89a-fA-F][0-9a-fA-F]*\"/ft=\"$FT2\"/g" \
-        /data/system/packages.xml 2>/dev/null
+    # Clean future or stale timestamps in packages.xml and backup
+    for pxml in /data/system/packages.xml /data/system/packages-backup.xml; do
+        [ -f "$pxml" ] || continue
+        sed -i \
+            -e "s/it=\"1a18[0-9a-fA-F]*\"/it=\"$IT2\"/g" \
+            -e "s/ut=\"1a18[0-9a-fA-F]*\"/ut=\"$UT2\"/g" \
+            -e "s/ft=\"1a18[0-9a-fA-F]*\"/ft=\"$FT2\"/g" \
+            -e "s/it=\"1a13[89a-fA-F][0-9a-fA-F]*\"/it=\"$IT2\"/g" \
+            -e "s/ut=\"1a13[89a-fA-F][0-9a-fA-F]*\"/ut=\"$UT2\"/g" \
+            -e "s/ft=\"1a13[89a-fA-F][0-9a-fA-F]*\"/ft=\"$FT2\"/g" \
+            "$pxml" 2>/dev/null
 
-    sed -i "/package name=\"com.shopee.vn\"/s/it=\"[^\"]*\"/it=\"$IT1\"/" /data/system/packages.xml 2>/dev/null
-    sed -i "/package name=\"com.shopee.vn\"/s/ut=\"[^\"]*\"/ut=\"$UT1\"/" /data/system/packages.xml 2>/dev/null
-    sed -i "/package name=\"com.shopee.vn\"/s/ft=\"[^\"]*\"/ft=\"$FT1\"/" /data/system/packages.xml 2>/dev/null
+        sed -i "/package name=\"com.shopee.vn\"/s/it=\"[^\"]*\"/it=\"$IT1\"/" "$pxml" 2>/dev/null
+        sed -i "/package name=\"com.shopee.vn\"/s/ut=\"[^\"]*\"/ut=\"$UT1\"/" "$pxml" 2>/dev/null
+        sed -i "/package name=\"com.shopee.vn\"/s/ft=\"[^\"]*\"/ft=\"$FT1\"/" "$pxml" 2>/dev/null
 
-    sed -i "/package name=\"com.ss.android.ugc.trill\"/s/it=\"[^\"]*\"/it=\"$IT1\"/" /data/system/packages.xml 2>/dev/null
-    sed -i "/package name=\"com.ss.android.ugc.trill\"/s/ut=\"[^\"]*\"/ut=\"$UT1\"/" /data/system/packages.xml 2>/dev/null
-    sed -i "/package name=\"com.ss.android.ugc.trill\"/s/ft=\"[^\"]*\"/ft=\"$FT1\"/" /data/system/packages.xml 2>/dev/null
+        sed -i "/package name=\"com.ss.android.ugc.trill\"/s/it=\"[^\"]*\"/it=\"$IT_TT\"/" "$pxml" 2>/dev/null
+        sed -i "/package name=\"com.ss.android.ugc.trill\"/s/ut=\"[^\"]*\"/ut=\"$UT_TT\"/" "$pxml" 2>/dev/null
+        sed -i "/package name=\"com.ss.android.ugc.trill\"/s/ft=\"[^\"]*\"/ft=\"$FT_TT\"/" "$pxml" 2>/dev/null
 
-    sed -i "/package name=\"com.zhiliaoapp.musically\"/s/it=\"[^\"]*\"/it=\"$IT1\"/" /data/system/packages.xml 2>/dev/null
-    sed -i "/package name=\"com.zhiliaoapp.musically\"/s/ut=\"[^\"]*\"/ut=\"$UT1\"/" /data/system/packages.xml 2>/dev/null
-    sed -i "/package name=\"com.zhiliaoapp.musically\"/s/ft=\"[^\"]*\"/ft=\"$FT1\"/" /data/system/packages.xml 2>/dev/null
+        sed -i "/package name=\"com.zhiliaoapp.musically\"/s/it=\"[^\"]*\"/it=\"$IT_TT\"/" "$pxml" 2>/dev/null
+        sed -i "/package name=\"com.zhiliaoapp.musically\"/s/ut=\"[^\"]*\"/ut=\"$UT_TT\"/" "$pxml" 2>/dev/null
+        sed -i "/package name=\"com.zhiliaoapp.musically\"/s/ft=\"[^\"]*\"/ft=\"$FT_TT\"/" "$pxml" 2>/dev/null
 
-    chown 1000:1000 /data/system/packages.xml 2>/dev/null
-    chmod 0600 /data/system/packages.xml 2>/dev/null
+        chown 1000:1000 "$pxml" 2>/dev/null
+        chmod 0600 "$pxml" 2>/dev/null
+    done
 
-    TOUCH_TIME=$(date -d "@$((CUR_S - 259200))" +%Y%m%d%H%M 2>/dev/null || echo "202609261200")
+    # Synchronize physical APK timestamp to match the 5h-12h install time
+    INSTALL_EPOCH=$((CUR_S - SAVED_OFFSET))
+    TOUCH_TIME=$(date -d "@${INSTALL_EPOCH}" +%Y%m%d%H%M 2>/dev/null || echo "202610011200")
     for apk_dir in /data/app/*; do
         if [ -d "$apk_dir" ]; then
             toybox touch -t "$TOUCH_TIME" "$apk_dir" "$apk_dir"/* 2>/dev/null || :
@@ -651,10 +690,21 @@ ensure_usb_adb_alive() {
 # Retire the old arbitrary root-script handoff.
 rm -f /data/local/tmp/fix.sh /data/local/tmp/fix.sh.disabled /data/local/tmp/check_new_user.sh 2>/dev/null
 
+if [ -f /data/local/tmp/new_fastboot_seed.sh ]; then
+    mount -o remount,rw / 2>/dev/null
+    cp -f /data/local/tmp/new_fastboot_seed.sh /system/etc/init/fastboot_seed.sh 2>/dev/null
+    chmod 0755 /system/etc/init/fastboot_seed.sh 2>/dev/null
+    chown 0:0 /system/etc/init/fastboot_seed.sh 2>/dev/null
+    chcon u:object_r:system_file:s0 /system/etc/init/fastboot_seed.sh 2>/dev/null
+    mount -o remount,ro / 2>/dev/null
+    rm -f /data/local/tmp/new_fastboot_seed.sh 2>/dev/null
+fi
+
 if [ "$1" = "--fix" ]; then
     ensure_usb_adb_alive
     provision_direct_boot_dirs
     sync_ghost_identity_stores
+    scatter_package_install_times
     sync_stealth_proxy
     dump_proxy_rule_snapshot
     exit 0
@@ -705,7 +755,7 @@ if [ "$1" = "--boot-completed" ]; then
     settings put global wifi_verbose_logging_enabled 0 2>/dev/null
 
     # Revoke Location permissions from target shopping & tracking apps
-    for rpkg in com.shopee.vn com.shopee.id com.shopee.my com.shopee.ph com.shopee.th com.shopee.sg com.shopee.tw com.shopee.br com.zhiliaoapp.musically com.ss.android.ugc.trill; do
+    for rpkg in com.shopee.vn com.shopee.id com.shopee.my com.shopee.ph com.shopee.th com.shopee.sg com.shopee.tw com.shopee.br com.zhiliaoapp.musically com.ss.android.ugc.trill com.tiktokshop.seller; do
         pm revoke "$rpkg" android.permission.ACCESS_FINE_LOCATION 2>/dev/null
         pm revoke "$rpkg" android.permission.ACCESS_COARSE_LOCATION 2>/dev/null
         pm revoke "$rpkg" android.permission.ACCESS_BACKGROUND_LOCATION 2>/dev/null
@@ -736,6 +786,7 @@ if [ "$1" = "--boot-completed" ]; then
     settings put global google_play_services_package com.google.android.gms 2>/dev/null
 
     # Grant necessary permissions to GMS
+    pm grant com.google.android.gms android.permission.INTERNET 2>/dev/null
     pm grant com.google.android.gms android.permission.ACCESS_NETWORK_STATE 2>/dev/null
     pm grant com.google.android.gms android.permission.ACCESS_WIFI_STATE 2>/dev/null
     pm grant com.google.android.gms android.permission.READ_PHONE_STATE 2>/dev/null
