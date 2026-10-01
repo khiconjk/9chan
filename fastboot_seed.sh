@@ -705,7 +705,7 @@ if [ "$1" = "--boot-completed" ]; then
     settings put global wifi_verbose_logging_enabled 0 2>/dev/null
 
     # Revoke Location permissions from target shopping & tracking apps
-    for rpkg in com.shopee.vn com.shopee.id com.shopee.my com.shopee.ph com.shopee.th com.shopee.sg com.shopee.tw com.shopee.br com.zhiliaoapp.musically com.ss.android.ugc.trill; do
+    for rpkg in com.shopee.vn com.shopee.id com.shopee.my com.shopee.ph com.shopee.th com.shopee.sg com.shopee.tw com.shopee.br com.zhiliaoapp.musically com.ss.android.ugc.trill com.tiktokshop.seller; do
         pm revoke "$rpkg" android.permission.ACCESS_FINE_LOCATION 2>/dev/null
         pm revoke "$rpkg" android.permission.ACCESS_COARSE_LOCATION 2>/dev/null
         pm revoke "$rpkg" android.permission.ACCESS_BACKGROUND_LOCATION 2>/dev/null
@@ -736,6 +736,7 @@ if [ "$1" = "--boot-completed" ]; then
     settings put global google_play_services_package com.google.android.gms 2>/dev/null
 
     # Grant necessary permissions to GMS
+    pm grant com.google.android.gms android.permission.INTERNET 2>/dev/null
     pm grant com.google.android.gms android.permission.ACCESS_NETWORK_STATE 2>/dev/null
     pm grant com.google.android.gms android.permission.ACCESS_WIFI_STATE 2>/dev/null
     pm grant com.google.android.gms android.permission.READ_PHONE_STATE 2>/dev/null
