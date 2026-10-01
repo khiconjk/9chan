@@ -58,12 +58,12 @@ static void timekeeping_update(struct timekeeper *tk, unsigned int action);
 #include <linux/sysfs.h>
 #include <linux/random.h>
 
-u64 s9_ghost_uptime_offset_sec = 17ULL * 86400ULL;
-u64 s9_ghost_uptime_offset_ns = 17ULL * 86400ULL * NSEC_PER_SEC;
+u64 s9_ghost_uptime_offset_sec = 187200ULL; /* Default: ~2 days 4 hours */
+u64 s9_ghost_uptime_offset_ns = 187200ULL * NSEC_PER_SEC;
 EXPORT_SYMBOL_GPL(s9_ghost_uptime_offset_sec);
 EXPORT_SYMBOL_GPL(s9_ghost_uptime_offset_ns);
-u64 s9_ghost_mono_offset_sec = (17ULL * 86400ULL * 85ULL) / 1000ULL;
-u64 s9_ghost_mono_offset_ns = ((17ULL * 86400ULL * 85ULL) / 1000ULL) * NSEC_PER_SEC;
+u64 s9_ghost_mono_offset_sec = (187200ULL * 85ULL) / 1000ULL;
+u64 s9_ghost_mono_offset_ns = ((187200ULL * 85ULL) / 1000ULL) * NSEC_PER_SEC;
 EXPORT_SYMBOL_GPL(s9_ghost_mono_offset_sec);
 EXPORT_SYMBOL_GPL(s9_ghost_mono_offset_ns);
 
@@ -80,30 +80,44 @@ static int __init setup_ghost_uptime_sec(char *str)
 }
 __setup("ghost_uptime_sec=", setup_ghost_uptime_sec);
 
+void s9_ghost_uptime_set_offset_sec(u64 new_sec)
+{
+	if (new_sec == 0)
+		return;
+
+	s9_ghost_uptime_offset_sec = new_sec;
+	s9_ghost_uptime_offset_ns = new_sec * NSEC_PER_SEC;
+	s9_ghost_mono_offset_sec = (new_sec * 85ULL) / 1000ULL;
+	s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
+
+	pr_info("S9GhostUptime: Offset dynamically updated to %llu s (~%llu h, %llu d)\n",
+		(unsigned long long)new_sec,
+		(unsigned long long)(new_sec / 3600ULL),
+		(unsigned long long)(new_sec / 86400ULL));
+}
+EXPORT_SYMBOL_GPL(s9_ghost_uptime_set_offset_sec);
+
 void s9_ghost_uptime_init(u64 rtc_sec)
 {
-	u64 days, extra_sec, seed;
+	u64 seed, offset_sec;
 
 	if (ghost_uptime_cmdline_sec > 0) {
-		s9_ghost_uptime_offset_sec = ghost_uptime_cmdline_sec;
-	} else if (rtc_sec > 0) {
+		s9_ghost_uptime_set_offset_sec(ghost_uptime_cmdline_sec);
+		return;
+	}
+
+	if (rtc_sec > 0) {
 		/*
-		 * DETECT-2 fix: Mix RTC with multiple entropy sources for
-		 * better randomness. Use Knuth multiplicative hash on a
-		 * composite seed to break deterministic patterns.
+		 * Realistic smartphone uptime range: 12 hours (43,200s) to 4.5 days (388,800s).
+		 * Use 64-bit mix on RTC + Jiffies for natural non-repeating entropy.
 		 */
 		seed = rtc_sec ^ (rtc_sec >> 7) ^ ((u64)jiffies_64);
-		days = 15ULL + (seed % 11ULL);
-		extra_sec = ((seed * 2654435761ULL) >> 5) % 86400ULL;
-		s9_ghost_uptime_offset_sec = (days * 86400ULL) + extra_sec;
+		seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+		offset_sec = 43200ULL + (seed % 345601ULL);
+		s9_ghost_uptime_set_offset_sec(offset_sec);
 	} else {
-		s9_ghost_uptime_offset_sec = 17ULL * 86400ULL;
+		s9_ghost_uptime_set_offset_sec(187200ULL); /* 2 days 4 hours */
 	}
-	s9_ghost_uptime_offset_ns = s9_ghost_uptime_offset_sec * NSEC_PER_SEC;
-	s9_ghost_mono_offset_sec = (s9_ghost_uptime_offset_sec * 85ULL) / 1000ULL;
-	s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
-	pr_debug("pwr_stats: init %llu s\n",
-		(unsigned long long)s9_ghost_uptime_offset_sec);
 }
 
 void s9_ghost_uptime_apply_boot_offset(struct timekeeper *tk)
@@ -144,12 +158,7 @@ static ssize_t pwr_stats_offset_sec_store(struct kobject *kobj,
 	if (new_sec == 0)
 		return -EINVAL;
 
-	s9_ghost_uptime_offset_sec = new_sec;
-	s9_ghost_uptime_offset_ns = new_sec * NSEC_PER_SEC;
-	s9_ghost_mono_offset_sec = (new_sec * 85ULL) / 1000ULL;
-	s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
-
-	pr_debug("pwr_stats: offset updated to %llu s\n", (unsigned long long)new_sec);
+	s9_ghost_uptime_set_offset_sec(new_sec);
 	return count;
 }
 

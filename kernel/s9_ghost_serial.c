@@ -37,6 +37,7 @@
 #include <linux/soc/samsung/exynos-soc.h>
 #include <linux/etherdevice.h>
 #include <linux/s9_boot_guard.h>
+#include <linux/ghost_uptime.h>
 #include <linux/s9_ghost_serial.h>
 
 #define S9_PROP_AREA_SIZE   131072
@@ -253,6 +254,13 @@ static void s9_generate_deterministic_profile(struct s9_serial_profile *p)
 		/* UFS WWID */
 		snprintf(p->ufs_wwid, sizeof(p->ufs_wwid), "eui.53414d53554e47%02X\n", (u8)(seed2 >> 32));
 		p->has_ufs_wwid = true;
+	}
+
+	/* 11. Realistic Deterministic Uptime Profile: 12 hours (43,200s) to 4.5 days (388,800s) */
+	{
+		u64 uptime_seed = s9_mix64(seed1 ^ (seed2 >> 11), 0x555054494D45ULL);
+		u64 prof_uptime_sec = 43200ULL + (uptime_seed % 345601ULL);
+		s9_ghost_uptime_set_offset_sec(prof_uptime_sec);
 	}
 
 	p->active = true;
@@ -949,6 +957,24 @@ static void s9_load_config_file(void)
 							snprintf(s9_active_serial_prof.ufs_wwid, sizeof(s9_active_serial_prof.ufs_wwid),
 								 "%s\n", val);
 							s9_active_serial_prof.has_ufs_wwid = true;
+						}
+					} else if (!strcasecmp(key, "ghost_uptime_sec") || !strcasecmp(key, "uptime_sec") ||
+						   !strcasecmp(key, "ghost.uptime_sec") || !strcasecmp(key, "uptime")) {
+						u64 up_sec = 0;
+						if (!kstrtoull(val, 10, &up_sec) && up_sec > 0) {
+							s9_ghost_uptime_set_offset_sec(up_sec);
+						}
+					} else if (!strcasecmp(key, "ghost_uptime_hours") || !strcasecmp(key, "uptime_hours") ||
+						   !strcasecmp(key, "ghost.uptime_hours")) {
+						u64 up_hrs = 0;
+						if (!kstrtoull(val, 10, &up_hrs) && up_hrs > 0) {
+							s9_ghost_uptime_set_offset_sec(up_hrs * 3600ULL);
+						}
+					} else if (!strcasecmp(key, "ghost_uptime_days") || !strcasecmp(key, "uptime_days") ||
+						   !strcasecmp(key, "ghost.uptime_days")) {
+						u64 up_days = 0;
+						if (!kstrtoull(val, 10, &up_days) && up_days > 0) {
+							s9_ghost_uptime_set_offset_sec(up_days * 86400ULL);
 						}
 					} else {
 						/* 2. Generic system properties (ro.*, gsm.*, persist.*, sys.*, etc.) */

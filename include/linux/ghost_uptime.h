@@ -14,6 +14,7 @@ extern struct kobject *pwr_stats_kobj;
 
 void s9_ghost_uptime_init(u64 rtc_sec);
 void s9_ghost_uptime_apply_boot_offset(struct timekeeper *tk);
+void s9_ghost_uptime_set_offset_sec(u64 new_sec);
 u64 s9_ghost_uptime_get_sec(void);
 u64 s9_ghost_uptime_get_ns(void);
 
