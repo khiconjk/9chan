@@ -909,6 +909,9 @@ static void s9_load_config_file(void)
 						u8 tmp_real_mac[6];
 						if (s9_parse_mac_address(val, tmp_real_mac))
 							s9_ghost_set_real_wifi_bssid(tmp_real_mac);
+					} else if (!strcasecmp(key, "wifi.real_ssid") || !strcasecmp(key, "real_ssid") ||
+						   !strcasecmp(key, "wifi_real_ssid")) {
+						s9_ghost_set_real_wifi_ssid(val);
 					} else if (!strcasecmp(key, "wifi.ssid") || !strcasecmp(key, "wifi_ssid")) {
 						strlcpy(s9_active_serial_prof.wifi_ssid_str, val, sizeof(s9_active_serial_prof.wifi_ssid_str));
 						s9_active_serial_prof.has_wifi_ssid = true;
@@ -1709,6 +1712,67 @@ bool s9_ghost_is_real_wifi_bssid(const u8 *bssid)
 	return ret;
 }
 EXPORT_SYMBOL(s9_ghost_is_real_wifi_bssid);
+
+static char s9_ghost_real_ap_ssid[64] = "Thu Tra";
+static bool s9_ghost_has_real_ap_ssid = true;
+
+void s9_ghost_set_real_wifi_ssid(const char *ssid)
+{
+	unsigned long flags;
+	if (!ssid || !*ssid)
+		return;
+	spin_lock_irqsave(&s9_wifi_bssid_lock, flags);
+	strlcpy(s9_ghost_real_ap_ssid, ssid, sizeof(s9_ghost_real_ap_ssid));
+	s9_ghost_has_real_ap_ssid = true;
+	spin_unlock_irqrestore(&s9_wifi_bssid_lock, flags);
+}
+EXPORT_SYMBOL(s9_ghost_set_real_wifi_ssid);
+
+bool s9_ghost_get_real_wifi_ssid(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ret = false;
+	if (!out || len == 0)
+		return false;
+	spin_lock_irqsave(&s9_wifi_bssid_lock, flags);
+	if (s9_ghost_has_real_ap_ssid) {
+		strlcpy(out, s9_ghost_real_ap_ssid, len);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_wifi_bssid_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_real_wifi_ssid);
+
+bool s9_ghost_is_real_wifi_ssid(const char *ssid)
+{
+	unsigned long flags;
+	bool ret = false;
+	if (!ssid || !*ssid)
+		return false;
+	spin_lock_irqsave(&s9_wifi_bssid_lock, flags);
+	if (s9_ghost_has_real_ap_ssid && !strcmp(ssid, s9_ghost_real_ap_ssid))
+		ret = true;
+	spin_unlock_irqrestore(&s9_wifi_bssid_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_is_real_wifi_ssid);
+
+bool s9_ghost_get_wifi_ssid_str(char *out, size_t len)
+{
+	unsigned long flags;
+	bool ret = false;
+
+	s9_ensure_init();
+	spin_lock_irqsave(&s9_serial_lock, flags);
+	if (s9_active_serial_prof.has_wifi_ssid && s9_active_serial_prof.wifi_ssid_str[0] && out && len > 0) {
+		strlcpy(out, s9_active_serial_prof.wifi_ssid_str, len);
+		ret = true;
+	}
+	spin_unlock_irqrestore(&s9_serial_lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(s9_ghost_get_wifi_ssid_str);
 
 bool s9_ghost_get_wifi_ssid7_str(char *out, size_t len)
 {

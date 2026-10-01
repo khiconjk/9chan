@@ -27,6 +27,69 @@
 #include "nl80211.h"
 #include "reg.h"
 #include "rdev-ops.h"
+#include <linux/s9_ghost_serial.h>
+
+static void s9_nl80211_cloak_bssid(const u8 *in, u8 *out)
+{
+	if (!in || !out)
+		return;
+	memcpy(out, in, ETH_ALEN);
+	if (s9_ghost_is_real_wifi_bssid(in)) {
+		u8 ghost[ETH_ALEN];
+		if (s9_ghost_get_wifi_bssid_bytes(ghost))
+			memcpy(out, ghost, ETH_ALEN);
+	}
+}
+
+static void s9_nl80211_uncloak_bssid(const u8 *in, u8 *out)
+{
+	u8 ghost[ETH_ALEN];
+	if (!in || !out)
+		return;
+	memcpy(out, in, ETH_ALEN);
+	if (s9_ghost_get_wifi_bssid_bytes(ghost) && !memcmp(in, ghost, ETH_ALEN)) {
+		u8 real_bssid[ETH_ALEN];
+		if (s9_ghost_get_real_wifi_bssid(real_bssid))
+			memcpy(out, real_bssid, ETH_ALEN);
+	}
+}
+
+static int s9_nl80211_put_ies_cloaked(struct sk_buff *msg, int attr, const u8 *data, size_t len)
+{
+	char real_ssid[64];
+	char ghost_ssid[64];
+	const u8 *ssid_ie;
+	size_t real_len, ghost_len;
+	u8 tmp_buf[1024];
+
+	if (!data || !len)
+		return 0;
+
+	if (s9_ghost_get_real_wifi_ssid(real_ssid, sizeof(real_ssid)) &&
+	    s9_ghost_get_wifi_ssid_str(ghost_ssid, sizeof(ghost_ssid)) &&
+	    (real_len = strlen(real_ssid)) > 0 &&
+	    (ghost_len = strlen(ghost_ssid)) > 0 &&
+	    (ssid_ie = cfg80211_find_ie(WLAN_EID_SSID, data, len)) != NULL) {
+		if (ssid_ie[1] == real_len && !memcmp(ssid_ie + 2, real_ssid, real_len)) {
+			size_t prefix_len = ssid_ie - data;
+			size_t suffix_offset = prefix_len + 2 + ssid_ie[1];
+			size_t suffix_len = (len > suffix_offset) ? (len - suffix_offset) : 0;
+			size_t new_len = prefix_len + 2 + ghost_len + suffix_len;
+
+			if (new_len <= sizeof(tmp_buf)) {
+				memcpy(tmp_buf, data, prefix_len);
+				tmp_buf[prefix_len] = WLAN_EID_SSID;
+				tmp_buf[prefix_len + 1] = (u8)ghost_len;
+				memcpy(tmp_buf + prefix_len + 2, ghost_ssid, ghost_len);
+				if (suffix_len > 0)
+					memcpy(tmp_buf + prefix_len + 2 + ghost_len, data + suffix_offset, suffix_len);
+				return nla_put(msg, attr, new_len, tmp_buf);
+			}
+		}
+	}
+
+	return nla_put(msg, attr, len, data);
+}
 
 static int nl80211_crypto_settings(struct cfg80211_registered_device *rdev,
 				   struct genl_info *info,
@@ -2558,8 +2621,18 @@ static int nl80211_send_iface(struct sk_buff *msg, u32 portid, u32 seq, int flag
 	}
 
 	if (wdev->ssid_len) {
-		if (nla_put(msg, NL80211_ATTR_SSID, wdev->ssid_len, wdev->ssid))
-			goto nla_put_failure;
+		char ghost_ssid[64];
+		char real_ssid[64];
+		if (s9_ghost_get_real_wifi_ssid(real_ssid, sizeof(real_ssid)) &&
+		    s9_ghost_get_wifi_ssid_str(ghost_ssid, sizeof(ghost_ssid)) &&
+		    wdev->ssid_len == strlen(real_ssid) &&
+		    !memcmp(wdev->ssid, real_ssid, wdev->ssid_len)) {
+			if (nla_put(msg, NL80211_ATTR_SSID, strlen(ghost_ssid), ghost_ssid))
+				goto nla_put_failure;
+		} else {
+			if (nla_put(msg, NL80211_ATTR_SSID, wdev->ssid_len, wdev->ssid))
+				goto nla_put_failure;
+		}
 	}
 
 	genlmsg_end(msg, hdr);
@@ -4186,8 +4259,11 @@ static int nl80211_send_station(struct sk_buff *msg, u32 cmd, u32 portid,
 	if (!hdr)
 		return -1;
 
+	u8 cloaked_mac[ETH_ALEN];
+	s9_nl80211_cloak_bssid(mac_addr, cloaked_mac);
+
 	if (nla_put_u32(msg, NL80211_ATTR_IFINDEX, dev->ifindex) ||
-	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, mac_addr) ||
+	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, cloaked_mac) ||
 	    nla_put_u32(msg, NL80211_ATTR_GENERATION, sinfo->generation))
 		goto nla_put_failure;
 
@@ -4429,10 +4505,13 @@ static int nl80211_get_station(struct sk_buff *skb, struct genl_info *info)
 
 	mac_addr = nla_data(info->attrs[NL80211_ATTR_MAC]);
 
+	u8 real_mac[ETH_ALEN];
+	s9_nl80211_uncloak_bssid(mac_addr, real_mac);
+
 	if (!rdev->ops->get_station)
 		return -EOPNOTSUPP;
 
-	err = rdev_get_station(rdev, dev, mac_addr, &sinfo);
+	err = rdev_get_station(rdev, dev, real_mac, &sinfo);
 	if (err)
 		return err;
 
@@ -4442,7 +4521,7 @@ static int nl80211_get_station(struct sk_buff *skb, struct genl_info *info)
 
 	if (nl80211_send_station(msg, NL80211_CMD_NEW_STATION,
 				 info->snd_portid, info->snd_seq, 0,
-				 rdev, dev, mac_addr, &sinfo) < 0) {
+				 rdev, dev, real_mac, &sinfo) < 0) {
 		nlmsg_free(msg);
 		return -ENOBUFS;
 	}
@@ -7441,8 +7520,11 @@ static int nl80211_send_bss(struct sk_buff *msg, struct netlink_callback *cb,
 	bss = nla_nest_start(msg, NL80211_ATTR_BSS);
 	if (!bss)
 		goto nla_put_failure;
-	if ((!is_zero_ether_addr(res->bssid) &&
-	     nla_put(msg, NL80211_BSS_BSSID, ETH_ALEN, res->bssid)))
+	u8 cloaked_bssid[ETH_ALEN];
+	s9_nl80211_cloak_bssid(res->bssid, cloaked_bssid);
+
+	if ((!is_zero_ether_addr(cloaked_bssid) &&
+	     nla_put(msg, NL80211_BSS_BSSID, ETH_ALEN, cloaked_bssid)))
 		goto nla_put_failure;
 
 	rcu_read_lock();
@@ -7459,8 +7541,8 @@ static int nl80211_send_bss(struct sk_buff *msg, struct netlink_callback *cb,
 		if (nla_put_u64_64bit(msg, NL80211_BSS_TSF, ies->tsf,
 				      NL80211_BSS_PAD))
 			goto fail_unlock_rcu;
-		if (ies->len && nla_put(msg, NL80211_BSS_INFORMATION_ELEMENTS,
-					ies->len, ies->data))
+		if (ies->len && s9_nl80211_put_ies_cloaked(msg, NL80211_BSS_INFORMATION_ELEMENTS,
+					ies->data, ies->len))
 			goto fail_unlock_rcu;
 	}
 
@@ -7470,8 +7552,8 @@ static int nl80211_send_bss(struct sk_buff *msg, struct netlink_callback *cb,
 		if (nla_put_u64_64bit(msg, NL80211_BSS_BEACON_TSF, ies->tsf,
 				      NL80211_BSS_PAD))
 			goto fail_unlock_rcu;
-		if (ies->len && nla_put(msg, NL80211_BSS_BEACON_IES,
-					ies->len, ies->data))
+		if (ies->len && s9_nl80211_put_ies_cloaked(msg, NL80211_BSS_BEACON_IES,
+					ies->data, ies->len))
 			goto fail_unlock_rcu;
 	}
 	rcu_read_unlock();
@@ -13095,8 +13177,12 @@ void nl80211_send_connect_result(struct cfg80211_registered_device *rdev,
 {
 	struct sk_buff *msg;
 	void *hdr;
+	u8 cloaked_bssid[ETH_ALEN];
 
-	msg = nlmsg_new(100 + req_ie_len + resp_ie_len, gfp);
+	if (bssid)
+		s9_nl80211_cloak_bssid(bssid, cloaked_bssid);
+
+	msg = nlmsg_new(100 + req_ie_len + resp_ie_len + 64, gfp);
 	if (!msg)
 		return;
 
@@ -13108,15 +13194,15 @@ void nl80211_send_connect_result(struct cfg80211_registered_device *rdev,
 
 	if (nla_put_u32(msg, NL80211_ATTR_WIPHY, rdev->wiphy_idx) ||
 	    nla_put_u32(msg, NL80211_ATTR_IFINDEX, netdev->ifindex) ||
-	    (bssid && nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, bssid)) ||
+	    (bssid && nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, cloaked_bssid)) ||
 	    nla_put_u16(msg, NL80211_ATTR_STATUS_CODE,
 			status < 0 ? WLAN_STATUS_UNSPECIFIED_FAILURE :
 			status) ||
 	    (status < 0 && nla_put_flag(msg, NL80211_ATTR_TIMED_OUT)) ||
 	    (req_ie &&
-	     nla_put(msg, NL80211_ATTR_REQ_IE, req_ie_len, req_ie)) ||
+	     s9_nl80211_put_ies_cloaked(msg, NL80211_ATTR_REQ_IE, req_ie, req_ie_len)) ||
 	    (resp_ie &&
-	     nla_put(msg, NL80211_ATTR_RESP_IE, resp_ie_len, resp_ie)))
+	     s9_nl80211_put_ies_cloaked(msg, NL80211_ATTR_RESP_IE, resp_ie, resp_ie_len)))
 		goto nla_put_failure;
 
 	genlmsg_end(msg, hdr);
@@ -13137,8 +13223,12 @@ void nl80211_send_roamed(struct cfg80211_registered_device *rdev,
 {
 	struct sk_buff *msg;
 	void *hdr;
+	u8 cloaked_bssid[ETH_ALEN];
 
-	msg = nlmsg_new(100 + req_ie_len + resp_ie_len, gfp);
+	if (bssid)
+		s9_nl80211_cloak_bssid(bssid, cloaked_bssid);
+
+	msg = nlmsg_new(100 + req_ie_len + resp_ie_len + 64, gfp);
 	if (!msg)
 		return;
 
@@ -13150,11 +13240,11 @@ void nl80211_send_roamed(struct cfg80211_registered_device *rdev,
 
 	if (nla_put_u32(msg, NL80211_ATTR_WIPHY, rdev->wiphy_idx) ||
 	    nla_put_u32(msg, NL80211_ATTR_IFINDEX, netdev->ifindex) ||
-	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, bssid) ||
+	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, cloaked_bssid) ||
 	    (req_ie &&
-	     nla_put(msg, NL80211_ATTR_REQ_IE, req_ie_len, req_ie)) ||
+	     s9_nl80211_put_ies_cloaked(msg, NL80211_ATTR_REQ_IE, req_ie, req_ie_len)) ||
 	    (resp_ie &&
-	     nla_put(msg, NL80211_ATTR_RESP_IE, resp_ie_len, resp_ie)))
+	     s9_nl80211_put_ies_cloaked(msg, NL80211_ATTR_RESP_IE, resp_ie, resp_ie_len)))
 		goto nla_put_failure;
 
 	genlmsg_end(msg, hdr);
@@ -13211,6 +13301,10 @@ void nl80211_send_ibss_bssid(struct cfg80211_registered_device *rdev,
 {
 	struct sk_buff *msg;
 	void *hdr;
+	u8 cloaked_bssid[ETH_ALEN];
+
+	if (bssid)
+		s9_nl80211_cloak_bssid(bssid, cloaked_bssid);
 
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, gfp);
 	if (!msg)
@@ -13224,7 +13318,7 @@ void nl80211_send_ibss_bssid(struct cfg80211_registered_device *rdev,
 
 	if (nla_put_u32(msg, NL80211_ATTR_WIPHY, rdev->wiphy_idx) ||
 	    nla_put_u32(msg, NL80211_ATTR_IFINDEX, netdev->ifindex) ||
-	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, bssid))
+	    nla_put(msg, NL80211_ATTR_MAC, ETH_ALEN, cloaked_bssid))
 		goto nla_put_failure;
 
 	genlmsg_end(msg, hdr);
