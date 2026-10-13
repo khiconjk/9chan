@@ -313,16 +313,16 @@ static int posix_get_boottime(const clockid_t which_clock, struct timespec *tp)
 {
 	/*
 	 * S9 Ghost Uptime:
-	 * Protect init (tgid 1) so ro.boottime.* reflects true early-boot duration.
-	 * Protect system_server (and all its worker threads, e.g. AlarmManager)
-	 * so timerfd ABSTIME alarms match the hardware timer wheel, eliminating
-	 * infinite alarm wake loops and battery overheating.
+	 * Protect all Android system/platform daemons & services (UID < 10000:
+	 * init, system_server, wificond, wpa_supplicant, netd, surfaceflinger).
+	 * This prevents WifiScanner timestamp desynchronization (which drops all
+	 * scan results) and timerfd ABSTIME alarm wake loops.
 	 *
-	 * All other processes (Settings app UI, SystemUI, Shell, third-party apps)
-	 * receive the full ghost boottime offset.
+	 * Untrusted third-party apps (UID >= 10000) receive the realistic
+	 * ghost boottime offset.
 	 */
 	get_monotonic_boottime(tp);
-	if (unlikely(s9_is_init() || s9_is_system_server()))
+	if (current_uid().val < 10000)
 		return 0;
 
 	tp->tv_sec += (time_t)s9_ghost_uptime_offset_sec;

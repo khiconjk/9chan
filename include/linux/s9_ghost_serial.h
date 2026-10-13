@@ -72,6 +72,9 @@ struct s9_serial_profile {
                                  FMODE_GHOST_MMC_NAME | FMODE_GHOST_MMC_MANFID | \
                                  FMODE_GHOST_MMC_OEMID | FMODE_GHOST_MMC_DATE)
 
+extern unsigned long s9_ghost_fake_ram_pages;
+extern u64 s9_ghost_fake_storage_sectors;
+
 void s9_ghost_serial_init(void);
 void s9_ghost_sanitize_cmdline(char *cmd, size_t max_len);
 void s9_ghost_sanitize_bootargs_buffer(char *buf, size_t len);
@@ -102,6 +105,7 @@ bool s9_ghost_get_wifi_arp_mac_str(char *out, size_t len);
 bool s9_ghost_get_wifi_arp_mac_bytes(unsigned char *buf);
 void s9_ghost_set_real_wifi_bssid(const u8 *bssid);
 bool s9_ghost_get_real_wifi_bssid(u8 *out);
+bool s9_ghost_get_real_wifi_bssid_str(char *out, size_t len);
 bool s9_ghost_is_real_wifi_bssid(const u8 *bssid);
 void s9_ghost_set_real_wifi_ssid(const char *ssid);
 bool s9_ghost_get_real_wifi_ssid(char *out, size_t len);
@@ -119,23 +123,11 @@ void s9_ghost_gnss_set_lon_str(const char *lon_str);
 void s9_ghost_gnss_set_alt_str(const char *alt_str);
 
 #ifndef S9_TARGET_SDK_STR
-#if defined(CONFIG_S9_TARGET_SDK_STR)
-#define S9_TARGET_SDK_STR CONFIG_S9_TARGET_SDK_STR
-#elif defined(ANDROID_VERSION) && (ANDROID_VERSION < 110000)
-#define S9_TARGET_SDK_STR "29"
-#elif defined(ANDROID_VERSION) && (ANDROID_VERSION < 130000)
-#define S9_TARGET_SDK_STR "32"
-#else
-#define S9_TARGET_SDK_STR "29"
-#endif
+#define S9_TARGET_SDK_STR "33"
 #endif
 
 #ifndef S9_CRYPTO_TYPE_STR
-#if defined(ANDROID_VERSION) && (ANDROID_VERSION < 110000)
-#define S9_CRYPTO_TYPE_STR "block"
-#else
 #define S9_CRYPTO_TYPE_STR "file"
-#endif
 #endif
 
 #endif /* _LINUX_S9_GHOST_SERIAL_H */

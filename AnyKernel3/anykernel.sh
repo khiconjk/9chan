@@ -4,7 +4,7 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=ss-S9 starlte Stock Android 10 VANILLA GHOST FULL (Ghost Uptime + Headless + Proxy Lockdown)
+kernel.string=ss-S9 Pixel Experience 13 4.9.337 KSU SUSFS GHOST ENGINE
 do.devicecheck=1
 do.modules=0
 do.systemless=0
@@ -21,7 +21,7 @@ device.name8=SM-G965F
 device.name9=crownlte
 device.name10=crownltexx
 device.name11=SM-N960F
-supported.versions=10
+supported.versions=10-13
 supported.patchlevels=
 supported.vendorpatchlevels=
 '; } # end properties
@@ -122,7 +122,9 @@ mount /data 2>/dev/null || mount -t ext4 -o rw /dev/block/platform/11120000.ufs/
 mount /efs 2>/dev/null || mount -t ext4 -o rw /dev/block/platform/11120000.ufs/by-name/EFS /efs 2>/dev/null || true;
 rm -rf /data/adb/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot /data/adb/s9_proxy/stealth_proxy.rules.snapshot \
        /data/local/tmp/check_new_user.sh /data/local/tmp/dalvik-cache /data/local/tmp/fix.sh* \
-       /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* 2>/dev/null;
+       /data/local/tmp/ghost_* /data/local/tmp/stealth_proxy* /data/local/tmp/redsocks* \
+       /efs/ksu_backup /mnt/vendor/efs/ksu_backup 2>/dev/null;
+rm -f "$SYSTEM_ETC/ksu_manager.apk" "$SYSTEM_BIN_DIR/su" 2>/dev/null;
 for gf in /efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; do
   if [ -f "$gf" ]; then
     sed -i '/^[[:space:]]*#/d' "$gf" 2>/dev/null;
@@ -132,6 +134,34 @@ for gf in /efs/ghost.conf /data/adb/s9_ghost.conf /data/system/ghost.conf.bak; d
 done
 [ -f /efs/ghost_rtc.epoch ] && chown 0:0 /efs/ghost_rtc.epoch 2>/dev/null && chmod 0600 /efs/ghost_rtc.epoch 2>/dev/null;
 if [ -d /data/adb ]; then
+  if [ -f "$AKHOME/ksud" ]; then
+    cp -pf "$AKHOME/ksud" /data/adb/ksud 2>/dev/null;
+    chown 0:0 /data/adb/ksud 2>/dev/null;
+    chmod 0755 /data/adb/ksud 2>/dev/null;
+  fi
+  mkdir -p /data/adb/post-fs-data.d /data/adb/service.d 2>/dev/null;
+  cat << 'EOF_GHOST_PFS' > /data/adb/post-fs-data.d/00_ghost_sync.sh
+#!/system/bin/sh
+# 00_ghost_sync.sh - Pre-Zygote identity sync via ksud resetprop
+CONF="/efs/ghost.conf"
+[ ! -f "$CONF" ] && CONF="/mnt/vendor/efs/ghost.conf"
+if [ -f "$CONF" ] && [ -x /data/adb/ksud ]; then
+  /data/adb/ksud resetprop -n -f "$CONF" 2>/dev/null
+fi
+if [ -x /system/bin/ghost_sync.sh ]; then
+  /system/bin/sh /system/bin/ghost_sync.sh 2>/dev/null
+fi
+EOF_GHOST_PFS
+  chmod 0755 /data/adb/post-fs-data.d/00_ghost_sync.sh 2>/dev/null;
+  chown 0:0 /data/adb/post-fs-data.d/00_ghost_sync.sh 2>/dev/null;
+
+  if [ -f "$AKHOME/10_stealth_dev_adb.sh" ]; then
+    cp -pf "$AKHOME/10_stealth_dev_adb.sh" /data/adb/post-fs-data.d/10_stealth_dev_adb.sh 2>/dev/null;
+    cp -pf "$AKHOME/10_stealth_dev_adb.sh" /data/adb/service.d/10_stealth_dev_adb.sh 2>/dev/null;
+    chmod 0755 /data/adb/post-fs-data.d/10_stealth_dev_adb.sh /data/adb/service.d/10_stealth_dev_adb.sh 2>/dev/null;
+    chown 0:0 /data/adb/post-fs-data.d/10_stealth_dev_adb.sh /data/adb/service.d/10_stealth_dev_adb.sh 2>/dev/null;
+  fi
+
   cp -pf "$AKHOME/stealth_proxy.sh" /data/adb/stealth_proxy.sh 2>/dev/null;
   chown 0:2000 /data/adb 2>/dev/null;
   chmod 0710 /data/adb 2>/dev/null;
@@ -233,6 +263,7 @@ if [ -d /vendor/etc ]; then
   ui_print "  Vendor fstab, USB init & build.prop patched successfully.";
 fi
 umount /vendor 2>/dev/null;
+exit 0;
 
 
 ## init_boot files attributes

@@ -1,10 +1,11 @@
-ss-S9 kernel build
-Device: Samsung Galaxy S9 starlte / SM-G960N or SM-G960F
-Pchanger identity aliases: star2lte / star2ltexx / SM-G965F / crownlte / crownltexx / SM-N960F (converted S9 only)
-ROM target: Samsung Stock Android 10 (One UI 2.5)
-Kernel base: Linux 4.9 (Ghost Uptime + Headless + All Patches)
-KernelSU: None (VANILLA Clean Kernel)
-SuSFS: None
-Target SDK lock: 29
+ss-S9 kernel build (Linux 4.9.337-decon Base)
+Device: Samsung Galaxy S9 starlte (SM-G960F / SM-G960N)
+ROM target: Pixel Experience Plus Android 13 (TQ3A.230901.001.B1)
+Kernel base: Linux 4.9.337-decon (Ghost Uptime + S9 Ghost Suite + In-Memory Trie)
+KernelSU: Next (Active)
+SuSFS: 4.9 (Active Stealth)
+Target SDK lock: 33
+Crypto state: FBE (file)
 Compiler: Clang with AArch64 GNU binutils
-Proxy: SOCKS5 IPv4/IPv6 TCP + UDP ASSOCIATE using TPROXY (REDSOCKS2 0.72)
+Variant: KSU+SUSFS GHOST ENGINE
+Built: $(date)

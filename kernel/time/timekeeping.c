@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/sched/loadavg.h>
 #include <linux/syscore_ops.h>
 #include <linux/clocksource.h>
 #include <linux/jiffies.h>
@@ -82,18 +83,19 @@ __setup("ghost_uptime_sec=", setup_ghost_uptime_sec);
 
 void s9_ghost_uptime_set_offset_sec(u64 new_sec)
 {
-	if (new_sec == 0)
-		return;
-
 	s9_ghost_uptime_offset_sec = new_sec;
 	s9_ghost_uptime_offset_ns = new_sec * NSEC_PER_SEC;
 	s9_ghost_mono_offset_sec = (new_sec * 85ULL) / 1000ULL;
 	s9_ghost_mono_offset_ns = s9_ghost_mono_offset_sec * NSEC_PER_SEC;
 
-	pr_info("S9GhostUptime: Offset dynamically updated to %llu s (~%llu h, %llu d)\n",
-		(unsigned long long)new_sec,
-		(unsigned long long)(new_sec / 3600ULL),
-		(unsigned long long)(new_sec / 86400ULL));
+	if (new_sec == 0) {
+		pr_info("S9GhostUptime: Disabled (offset=0, reporting real uptime)\n");
+	} else {
+		pr_info("S9GhostUptime: Offset dynamically updated to %llu s (~%llu h, %llu d)\n",
+			(unsigned long long)new_sec,
+			(unsigned long long)(new_sec / 3600ULL),
+			(unsigned long long)(new_sec / 86400ULL));
+	}
 }
 EXPORT_SYMBOL_GPL(s9_ghost_uptime_set_offset_sec);
 
@@ -154,8 +156,6 @@ static ssize_t pwr_stats_offset_sec_store(struct kobject *kobj,
 	u64 new_sec = 0;
 
 	if (kstrtoull(buf, 10, &new_sec))
-		return -EINVAL;
-	if (new_sec == 0)
 		return -EINVAL;
 
 	s9_ghost_uptime_set_offset_sec(new_sec);

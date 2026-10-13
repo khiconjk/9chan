@@ -1,6 +1,53 @@
 #!/system/bin/sh
 # Fast First-Boot & Headless Always-On ADB Seed Engine (Runs at post-fs-data & boot_completed as root)
 # GHOST_SEED_V2026_10_01_KEYSTORE_FIX
+# ===== GHOST SAFE-BOOT GUARD (added 2026-10-06) =====
+# Never block init. If Android has not finished booting yet, only do the
+# minimal ADB-key provisioning and exit immediately; full provisioning runs
+# later from boot_completed trigger (which is always exec_background).
+if [ "$1" != "--fix" ]; then
+    if [ "$(getprop sys.boot_completed 2>/dev/null)" != "1" ]; then
+        mkdir -p /data/misc/adb 2>/dev/null
+        if [ ! -s /data/misc/adb/adb_keys ]; then
+            if [ -s /system/etc/adb_keys ]; then
+                cp -f /system/etc/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+            elif [ -s /efs/adb_keys ]; then
+                cp -f /efs/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+            fi
+        fi
+        chown 1000:2000 /data/misc/adb /data/misc/adb/adb_keys 2>/dev/null
+        chmod 2750 /data/misc/adb 2>/dev/null
+        chmod 0640 /data/misc/adb/adb_keys 2>/dev/null
+
+        # Pre-seed Direct Boot User 0 XMLs so SettingsProvider starts already provisioned
+        mkdir -p /data/system/users/0 2>/dev/null
+        if [ ! -f /data/system/users/0/settings_global.xml ]; then
+            cat << 'EOF_G' > /data/system/users/0/settings_global.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<settings version="182">
+  <setting id="1" name="device_provisioned" value="1" package="android" defaultValue="1" defaultSysSet="true" />
+  <setting id="2" name="adb_enabled" value="1" package="android" defaultValue="1" defaultSysSet="true" />
+  <setting id="3" name="setup_wizard_has_run" value="1" package="android" defaultValue="1" defaultSysSet="true" />
+  <setting id="4" name="development_settings_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
+</settings>
+EOF_G
+            cat << 'EOF_S' > /data/system/users/0/settings_secure.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<settings version="182">
+  <setting id="1" name="user_setup_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
+  <setting id="2" name="navigation_mode" value="0" package="android" defaultValue="0" defaultSysSet="true" />
+</settings>
+EOF_S
+            chown -R 1000:1000 /data/system/users/0 2>/dev/null
+            chmod 0700 /data/system/users/0 2>/dev/null
+            chmod 0600 /data/system/users/0/settings_*.xml 2>/dev/null
+        fi
+        exit 0
+    fi
+fi
+
+# GHOST_SEED_V2026_10_05_A13_ALWAYS_ADB
+# GHOST_SEED_V2026_10_05_A13_ALWAYS_ADB_V2
 
 sync_persistent_clock() {
     CUR_EPOCH=$(date +%s 2>/dev/null)
@@ -37,8 +84,8 @@ if [ ! -c /dev/null ]; then
 fi
 
 provision_direct_boot_dirs() {
-    # 1. Base User, Direct Boot & ART Profile parent directories (prevents PackageManagerService rollback of /data/user_de/0/*)
-    mkdir -p /data/data /data/user/0 /data/system/users/0 /data/user_de/0 /data/system_de/0 /data/misc_de/0 /data/system_ce/0 /data/misc_ce/0 2>/dev/null
+    mkdir -p /data/data /data/user /data/system/users/0 /data/user_de/0 /data/system_de/0 /data/misc_de/0 /data/system_ce/0 /data/misc_ce/0 2>/dev/null
+    if [ ! -e /data/user/0 ]; then ln -sf /data/data /data/user/0 2>/dev/null; fi
     mkdir -p /data/misc/profiles/cur/0 /data/misc/profiles/ref 2>/dev/null
     chown 1000:1000 /data/misc/profiles /data/misc/profiles/cur /data/misc/profiles/cur/0 /data/misc/profiles/ref 2>/dev/null
     chmod 0771 /data/misc/profiles /data/misc/profiles/cur /data/misc/profiles/cur/0 /data/misc/profiles/ref 2>/dev/null
@@ -163,8 +210,8 @@ provision_direct_boot_dirs() {
     restorecon /data/misc_ce /data/misc_ce/0 /data/misc_de /data/misc_de/0 || return 1
 }
 
-echo $$ > /acct/cgroup.procs 2>/dev/null
-echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+[ -f /acct/cgroup.procs ] && echo $$ > /acct/cgroup.procs 2>/dev/null
+[ -f /dev/cpuset/cgroup.procs ] && echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
 
 sync_ghost_identity_stores() {
     umount -l /system/etc/init/fastboot_seed.sh 2>/dev/null
@@ -177,6 +224,8 @@ sync_ghost_identity_stores() {
     sed -i '/name="plugin_lock_event_dump"/d' /data/system/users/0/settings_secure.xml 2>/dev/null
     setprop persist.sys.block_attest 1 2>/dev/null
     setprop persist.vendor.sys.block_attest 1 2>/dev/null
+    setprop ro.security.vault.id 89cb2abb18affe1 2>/dev/null
+    resetprop ro.security.vault.id 89cb2abb18affe1 2>/dev/null || true
 
     # Rotate persist.netd.stable_secret & Disable IPv6 across all interfaces
     RAND_IPV6_SECRET=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' | cut -c1-32)
@@ -427,7 +476,10 @@ sync_stealth_proxy() {
     [ -x /data/adb/s9_proxy/redsocks2 ] && PROXY_BIN="/data/adb/s9_proxy/redsocks2"
     PROXY_SCRIPT="/system/bin/stealth_proxy.sh"
     [ -x /data/adb/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/stealth_proxy.sh"
-    [ -x /data/adb/s9_proxy/stealth_proxy.sh ] && PROXY_SCRIPT="/data/adb/s9_proxy/stealth_proxy.sh"
+    if [ -f /data/adb/s9_proxy/stealth_proxy.sh ]; then
+        chmod 0755 /data/adb/s9_proxy/stealth_proxy.sh 2>/dev/null
+        PROXY_SCRIPT="/data/adb/s9_proxy/stealth_proxy.sh"
+    fi
     GEO_TZ=""
     GEO_ISO=""
     GEO_ALPHA=""
@@ -503,9 +555,11 @@ sync_stealth_proxy() {
         rm -f /data/local/tmp/ghost_loc.conf 2>/dev/null
     fi
 
-    settings put global private_dns_mode off 2>/dev/null
-    settings put global captive_portal_mode 0 2>/dev/null
-    settings put global captive_portal_detection_enabled 0 2>/dev/null
+    (
+        settings put global private_dns_mode off
+        settings put global captive_portal_mode 0
+        settings put global captive_portal_detection_enabled 0
+    ) >/dev/null 2>&1 &
 
     [ ! -x "$PROXY_SCRIPT" ] && return 1
     PROXY_ACTION="auto"
@@ -521,7 +575,6 @@ sync_stealth_proxy() {
             fi
         fi
     done
-    rm -rf /dev/.s9_stealth_proxy.lock 2>/dev/null
     LOG_FILE="$PROXY_DIR/stealth_proxy.log"
     STATUS_FILE="$PROXY_DIR/stealth_proxy.status"
     "$PROXY_SCRIPT" "$PROXY_ACTION" >"$LOG_FILE" 2>&1
@@ -672,19 +725,47 @@ scatter_package_install_times() {
 }
 
 ensure_usb_adb_alive() {
+    CUR_USB=$(getprop sys.usb.config 2>/dev/null)
+    case "$CUR_USB" in
+        *adb*) ;;
+        *)
+            setprop persist.sys.usb.config mtp,adb 2>/dev/null
+            setprop sys.usb.config mtp,adb 2>/dev/null
+            ;;
+    esac
+    [ "$(getprop persist.service.adb.enable 2>/dev/null)" != "1" ] && setprop persist.service.adb.enable 1 2>/dev/null
+    settings put global adb_enabled 1 2>/dev/null
+    settings put global development_settings_enabled 0 2>/dev/null
+    mkdir -p /data/misc/adb 2>/dev/null
+    if [ ! -s /data/misc/adb/adb_keys ]; then
+        if [ -s /system/etc/adb_keys ]; then
+            cp -f /system/etc/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+        elif [ -s /efs/adb_keys ]; then
+            cp -f /efs/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+        elif [ -s /mnt/vendor/efs/adb_keys ]; then
+            cp -f /mnt/vendor/efs/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+        fi
+        chown 1000:2000 /data/misc/adb /data/misc/adb/adb_keys 2>/dev/null
+        chmod 2750 /data/misc/adb 2>/dev/null
+        chmod 0640 /data/misc/adb/adb_keys 2>/dev/null
+    fi
     if ! pidof adbd >/dev/null 2>&1; then
         start adbd 2>/dev/null
-        sleep 0.2
     fi
-    if [ "$(cat /sys/class/android_usb/android0/enable 2>/dev/null)" != "1" ] || ! grep -q "adb" /sys/class/android_usb/android0/functions 2>/dev/null; then
-        echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null
-        echo 0x6860 > /sys/kernel/config/usb_gadget/g1/idProduct 2>/dev/null
-        echo 0x04E8 > /sys/kernel/config/usb_gadget/g1/idVendor 2>/dev/null
-        echo mtp,acm,adb > /sys/class/android_usb/android0/functions 2>/dev/null
-        echo 0 > /sys/kernel/config/usb_gadget/g1/bDeviceClass 2>/dev/null
-        echo 10c00000.dwc3 > /sys/kernel/config/usb_gadget/g1/UDC 2>/dev/null
-        echo 1 > /sys/class/android_usb/android0/enable 2>/dev/null
-    fi
+}
+
+ensure_ksu_post_fs_data() {
+    # Non-Root Clean: Purge any lingering KSU/root artifacts
+    rm -rf /data/adb/ksu /data/adb/ksud /data/adb/ksu_backup /mnt/vendor/efs/ksu_backup /efs/ksu_backup 2>/dev/null
+    rm -f /data/adb/ksu/bin/su /system/bin/su /system/xbin/su 2>/dev/null
+}
+
+ensure_ksu_boot_completed() {
+    # Non-Root Clean: Ensure no KSU Manager is ever installed or reinstalled
+    pm uninstall kwlkkw.odbaum.pebxnq 2>/dev/null
+    pm uninstall io.github.tiann.kernelsu 2>/dev/null
+    pm uninstall com.rifs.kernelsu 2>/dev/null
+    rm -f /system/etc/ksu_manager.apk /data/local/tmp/ksu_manager.apk 2>/dev/null
 }
 
 # Retire the old arbitrary root-script handoff.
@@ -701,24 +782,41 @@ if [ -f /data/local/tmp/new_fastboot_seed.sh ]; then
 fi
 
 if [ "$1" = "--fix" ]; then
+    sync_stealth_proxy
+    dump_proxy_rule_snapshot
     ensure_usb_adb_alive
     provision_direct_boot_dirs
     sync_ghost_identity_stores
     scatter_package_install_times
-    sync_stealth_proxy
-    dump_proxy_rule_snapshot
     exit 0
 fi
 
 if [ "$1" = "--boot-completed" ]; then
     ensure_usb_adb_alive
     locksettings set-disabled true 2>/dev/null
+
+    # 1. Disable Setup Wizard & restore packages permanently
+    for su_pkg in com.google.android.setupwizard com.android.setupwizard com.google.android.apps.restore com.google.android.setupwizard.auto com.google.android.pixel.setupwizard; do
+        pm disable "$su_pkg" 2>/dev/null
+    done
+
+    # 2. Force Provisioned & Setup Complete
     settings put global device_provisioned 1 2>/dev/null
     settings put secure user_setup_complete 1 2>/dev/null
     settings put secure sec_setupwizard_complete 1 2>/dev/null
     settings put secure tv_user_setup_complete 1 2>/dev/null
+    settings put global setup_wizard_has_run 1 2>/dev/null
+
+    # 3. Enable 3-Button Navigation Bar & Unblock Toolbar/Status Bar
+    cmd overlay disable com.android.internal.systemui.navbar.gestural 2>/dev/null
+    cmd overlay disable --user 0 com.android.internal.systemui.navbar.gestural 2>/dev/null
+    cmd overlay enable com.android.internal.systemui.navbar.threebutton 2>/dev/null
+    cmd overlay enable --user 0 com.android.internal.systemui.navbar.threebutton 2>/dev/null
     settings put secure navigation_mode 0 2>/dev/null
-    settings put global adb_enabled 0 2>/dev/null
+    cmd statusbar collapse 2>/dev/null
+
+    # 4. ADB & Developer Options
+    settings put global adb_enabled 1 2>/dev/null
     settings put global development_settings_enabled 0 2>/dev/null
     settings put global hide_error_dialogs 1 2>/dev/null
     settings put global stay_on_while_plugged_in 7 2>/dev/null
@@ -737,7 +835,7 @@ if [ "$1" = "--boot-completed" ]; then
     echo schedutil > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
     echo schedutil > /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null
     echo 512 > /sys/block/sda/queue/read_ahead_kb 2>/dev/null
-    echo reload > /proc/s9_serial 2>/dev/null
+    [ -e /proc/s9_serial ] && echo reload > /proc/s9_serial 2>/dev/null
     ensure_usb_adb_alive
     sync_ghost_identity_stores
     sanitize_packages_and_timezone
@@ -800,8 +898,9 @@ if [ "$1" = "--boot-completed" ]; then
         if [ -x "$sp" ] || [ -f "$sp" ]; then
             if ! pgrep -f "stealth_proxy.sh daemon" >/dev/null 2>&1; then
                 (
-                    echo $$ > /acct/cgroup.procs 2>/dev/null
-                    echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+                    [ -f /sys/fs/cgroup/cgroup.procs ] && echo $$ > /sys/fs/cgroup/cgroup.procs 2>/dev/null
+                    [ -f /dev/cpuset/cgroup.procs ] && echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+                    echo -1000 > /proc/$$/oom_score_adj 2>/dev/null
                     exec /system/bin/sh "$sp" daemon >/dev/null 2>&1
                 ) &
             fi
@@ -811,19 +910,31 @@ if [ "$1" = "--boot-completed" ]; then
 
     # Watchdog loop detached from init service cgroup
     (
-        echo $$ > /acct/cgroup.procs 2>/dev/null
-        echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+        [ -f /sys/fs/cgroup/cgroup.procs ] && echo $$ > /sys/fs/cgroup/cgroup.procs 2>/dev/null
+        [ -f /dev/cpuset/cgroup.procs ] && echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+        echo -1000 > /proc/$$/oom_score_adj 2>/dev/null
         for t in 5 10 15 20 30 45 60 90; do
             sleep $t
             ensure_usb_adb_alive
             sync_persistent_clock
             sanitize_packages_and_timezone
+            for su_pkg in com.google.android.setupwizard com.android.setupwizard com.google.android.apps.restore com.google.android.setupwizard.auto com.google.android.pixel.setupwizard; do
+                pm disable "$su_pkg" 2>/dev/null
+            done
             settings put global device_provisioned 1 2>/dev/null
             settings put secure user_setup_complete 1 2>/dev/null
             settings put secure sec_setupwizard_complete 1 2>/dev/null
             settings put secure tv_user_setup_complete 1 2>/dev/null
+            settings put global setup_wizard_has_run 1 2>/dev/null
+            cmd overlay disable com.android.internal.systemui.navbar.gestural 2>/dev/null
+            cmd overlay disable --user 0 com.android.internal.systemui.navbar.gestural 2>/dev/null
+            cmd overlay enable com.android.internal.systemui.navbar.threebutton 2>/dev/null
+            cmd overlay enable --user 0 com.android.internal.systemui.navbar.threebutton 2>/dev/null
             settings put secure navigation_mode 0 2>/dev/null
-            settings put global adb_enabled 0 2>/dev/null
+            cmd statusbar collapse 2>/dev/null
+            input keyevent KEYCODE_HOME 2>/dev/null
+            am start -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null
+            settings put global adb_enabled 1 2>/dev/null
             settings put global development_settings_enabled 0 2>/dev/null
             if [ -f /proc/s9_serial ]; then
                 echo reload > /proc/s9_serial 2>/dev/null
@@ -840,8 +951,12 @@ if [ "$1" = "--boot-completed" ]; then
             if [ "$t" = "20" ]; then
                 dump_proxy_rule_snapshot
             fi
+            if [ "$t" = "5" ] || [ "$t" = "10" ]; then
+                ensure_ksu_boot_completed
+            fi
         done
     ) &
+    ensure_ksu_boot_completed
     exit 0
 fi
 
@@ -852,9 +967,19 @@ echo 2048 > /sys/block/sda/queue/read_ahead_kb 2>/dev/null
 echo 0 > /sys/block/sda/queue/iostats 2>/dev/null
 
 # 2. Always ensure Headless ADB keys exist
-mkdir -p /data/misc/adb
-if [ -f /system/etc/adb_keys ] && [ ! -s /data/misc/adb/adb_keys ]; then
-    cp -f /system/etc/adb_keys /data/misc/adb/adb_keys
+mkdir -p /data/misc/adb 2>/dev/null
+if [ ! -s /data/misc/adb/adb_keys ]; then
+    if [ -s /system/etc/adb_keys ]; then
+        cp -f /system/etc/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+    elif [ -s /efs/adb_keys ]; then
+        cp -f /efs/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+    elif [ -s /mnt/vendor/efs/adb_keys ]; then
+        cp -f /mnt/vendor/efs/adb_keys /data/misc/adb/adb_keys 2>/dev/null
+    fi
+fi
+if [ -s /system/etc/adb_keys ] && [ ! -s /efs/adb_keys ]; then
+    cp -f /system/etc/adb_keys /efs/adb_keys 2>/dev/null
+    chmod 0644 /efs/adb_keys 2>/dev/null
 fi
 chown 1000:2000 /data/misc/adb /data/misc/adb/adb_keys 2>/dev/null
 chmod 2750 /data/misc/adb 2>/dev/null
@@ -883,14 +1008,15 @@ if [ ! -f /data/system/users/0/settings_global.xml ] || [ ! -d /data/dalvik-cach
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <settings version="182">
   <setting id="1" name="device_provisioned" value="1" package="android" defaultValue="1" defaultSysSet="true" />
-  <setting id="2" name="adb_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
+  <setting id="2" name="adb_enabled" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="3" name="stay_on_while_plugged_in" value="7" package="android" defaultValue="7" defaultSysSet="true" />
-  <setting id="4" name="window_animation_scale" value="0.0" package="android" defaultValue="0.0" defaultSysSet="true" />
-  <setting id="5" name="transition_animation_scale" value="0.0" package="android" defaultValue="0.0" defaultSysSet="true" />
-  <setting id="6" name="animator_duration_scale" value="0.0" package="android" defaultValue="0.0" defaultSysSet="true" />
+  <setting id="4" name="window_animation_scale" value="1.0" package="android" defaultValue="1.0" defaultSysSet="true" />
+  <setting id="5" name="transition_animation_scale" value="1.0" package="android" defaultValue="1.0" defaultSysSet="true" />
+  <setting id="6" name="animator_duration_scale" value="1.0" package="android" defaultValue="1.0" defaultSysSet="true" />
   <setting id="7" name="development_settings_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
   <setting id="8" name="hide_error_dialogs" value="1" package="android" defaultValue="1" defaultSysSet="true" />
-  <setting id="9" name="zen_mode" value="2" package="android" defaultValue="2" defaultSysSet="true" />
+  <setting id="9" name="zen_mode" value="0" package="android" defaultValue="0" defaultSysSet="true" />
+  <setting id="10" name="setup_wizard_has_run" value="1" package="android" defaultValue="1" defaultSysSet="true" />
 </settings>
 EOF
     fi
@@ -904,9 +1030,8 @@ EOF
   <setting id="1" name="user_setup_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="2" name="sec_setupwizard_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
   <setting id="3" name="tv_user_setup_complete" value="1" package="android" defaultValue="1" defaultSysSet="true" />
-  <setting id="4" name="lockscreen.disabled" value="1" package="android" defaultValue="1" defaultSysSet="true" />
-  <setting id="5" name="navigation_mode" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="6" name="android_id" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" />
+  <setting id="4" name="navigation_mode" value="0" package="android" defaultValue="0" defaultSysSet="true" />
+  <setting id="5" name="android_id" value="${G_AID}" package="android" defaultValue="${G_AID}" defaultSysSet="true" />
 </settings>
 EOF
     fi
@@ -916,19 +1041,7 @@ EOF
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <settings version="182">
   <setting id="1" name="screen_off_timeout" value="1800000" package="android" defaultValue="1800000" defaultSysSet="true" />
-  <setting id="2" name="mode_ringer" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="3" name="volume_music" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="4" name="volume_ring" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="5" name="volume_system" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="6" name="volume_voice" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="7" name="volume_alarm" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="8" name="volume_notification" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="9" name="volume_bluetooth_sco" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="10" name="volume_a11y" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="11" name="sound_effects_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="12" name="dtmf_tone" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="13" name="lockscreen_sounds_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
-  <setting id="14" name="haptic_feedback_enabled" value="0" package="android" defaultValue="0" defaultSysSet="true" />
+  <setting id="2" name="mode_ringer" value="2" package="android" defaultValue="2" defaultSysSet="true" />
 </settings>
 EOF
     fi
@@ -939,11 +1052,28 @@ EOF
 fi
 
 if [ -f /data/system/users/0/settings_global.xml ]; then
-    sed -i '/name="adb_enabled"/s/value="[^"]*"/value="0"/g; /name="adb_enabled"/s/defaultValue="[^"]*"/defaultValue="0"/g' /data/system/users/0/settings_global.xml 2>/dev/null
+    sed -i '/name="adb_enabled"/s/value="[^"]*"/value="1"/g; /name="adb_enabled"/s/defaultValue="[^"]*"/defaultValue="1"/g' /data/system/users/0/settings_global.xml 2>/dev/null
     sed -i '/name="development_settings_enabled"/s/value="[^"]*"/value="0"/g; /name="development_settings_enabled"/s/defaultValue="[^"]*"/defaultValue="0"/g' /data/system/users/0/settings_global.xml 2>/dev/null
+    sed -i '/name="device_provisioned"/s/value="[^"]*"/value="1"/g; /name="device_provisioned"/s/defaultValue="[^"]*"/defaultValue="1"/g' /data/system/users/0/settings_global.xml 2>/dev/null
+    sed -i '/name="setup_wizard_has_run"/s/value="[^"]*"/value="1"/g; /name="setup_wizard_has_run"/s/defaultValue="[^"]*"/defaultValue="1"/g' /data/system/users/0/settings_global.xml 2>/dev/null
+fi
+
+if [ -f /data/system/users/0/settings_secure.xml ]; then
+    sed -i '/name="user_setup_complete"/s/value="[^"]*"/value="1"/g; /name="user_setup_complete"/s/defaultValue="[^"]*"/defaultValue="1"/g' /data/system/users/0/settings_secure.xml 2>/dev/null
+    sed -i '/name="sec_setupwizard_complete"/s/value="[^"]*"/value="1"/g; /name="sec_setupwizard_complete"/s/defaultValue="[^"]*"/defaultValue="1"/g' /data/system/users/0/settings_secure.xml 2>/dev/null
+    sed -i '/name="tv_user_setup_complete"/s/value="[^"]*"/value="1"/g; /name="tv_user_setup_complete"/s/defaultValue="[^"]*"/defaultValue="1"/g' /data/system/users/0/settings_secure.xml 2>/dev/null
+    sed -i '/name="navigation_mode"/s/value="[^"]*"/value="0"/g; /name="navigation_mode"/s/defaultValue="[^"]*"/defaultValue="0"/g' /data/system/users/0/settings_secure.xml 2>/dev/null
+    if ! grep -q 'name="user_setup_complete"' /data/system/users/0/settings_secure.xml 2>/dev/null; then
+        sed -i "s|</settings>|  <setting id=\"9981\" name=\"user_setup_complete\" value=\"1\" package=\"android\" defaultValue=\"1\" defaultSysSet=\"true\" />\n</settings>|g" /data/system/users/0/settings_secure.xml 2>/dev/null
+    fi
+    if ! grep -q 'name="navigation_mode"' /data/system/users/0/settings_secure.xml 2>/dev/null; then
+        sed -i "s|</settings>|  <setting id=\"9982\" name=\"navigation_mode\" value=\"0\" package=\"android\" defaultValue=\"0\" defaultSysSet=\"true\" />\n</settings>|g" /data/system/users/0/settings_secure.xml 2>/dev/null
+    fi
 fi
 
 sync_ghost_identity_stores
 sync_stealth_proxy
 dump_proxy_rule_snapshot
+ensure_ksu_post_fs_data
+
 

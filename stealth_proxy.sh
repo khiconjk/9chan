@@ -5,8 +5,15 @@
 # Automatically hijacks net.typeblog.socks (SocksDroid) to eliminate tun0 & VPN flag!
 # ==============================================================================
 
+# Auto elevate to root if running under unprivileged user (e.g. adb shell UID 2000)
+if [ "$(id -u)" != "0" ]; then
+    if command -v su >/dev/null 2>&1; then
+        exec su -c "$0 $*"
+    fi
+fi
+
 umask 077
-echo $$ > /acct/cgroup.procs 2>/dev/null
+echo $$ > /sys/fs/cgroup/cgroup.procs 2>/dev/null
 echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
 
 CONF_DIR="/data/adb/s9_proxy"
@@ -26,6 +33,41 @@ CONF_FILE="$CONF_DIR/redsocks.conf"
 PID_FILE="$CONF_DIR/redsocks.pid"
 STATE_FILE="$CONF_DIR/stealth_proxy.state"
 STATUS_FILE="$CONF_DIR/stealth_proxy.status"
+
+set_status() {
+    local st="$1"
+    echo "$st" > "$STATUS_FILE" 2>/dev/null
+    chown 0:0 "$STATUS_FILE" 2>/dev/null
+    chmod 0644 "$STATUS_FILE" 2>/dev/null
+    if [ -f /data/local/tmp/.sp_wait ]; then
+        cp -pf "$STATUS_FILE" /data/local/tmp/.sp_res 2>/dev/null
+        chmod 0666 /data/local/tmp/.sp_res 2>/dev/null
+        rm -f /data/local/tmp/.sp_wait 2>/dev/null
+    fi
+}
+
+PROXY_MUTEX_DIR="/data/adb/s9_proxy/.lock"
+[ -d "/data/adb" ] || PROXY_MUTEX_DIR="/data/local/tmp/.s9_stealth_proxy.lock"
+acquire_lock() {
+    local tries=0
+    while ! mkdir "$PROXY_MUTEX_DIR" 2>/dev/null; do
+        tries=$((tries + 1))
+        if [ "$tries" -gt 25 ]; then
+            rm -rf "$PROXY_MUTEX_DIR" 2>/dev/null
+            if mkdir "$PROXY_MUTEX_DIR" 2>/dev/null; then
+                break
+            else
+                echo "[!] Warning: Cannot acquire mutex lock ($PROXY_MUTEX_DIR). Proceeding." >&2
+                break
+            fi
+        fi
+        sleep 0.2
+    done
+}
+release_lock() {
+    rm -rf "$PROXY_MUTEX_DIR" 2>/dev/null
+}
+
 LOCK4_CHAIN="S9_PROXY_LOCK"
 LOCK6_CHAIN="S9_PROXY6_LOCK"
 PENDING4_CHAIN="S9_PROXY_PENDING"
@@ -61,7 +103,13 @@ iptables() {
     IPTABLES_OUTPUT=$("$IPTABLES_BIN" -w 30 "$@" 2>&1 1>/dev/null)
     IPTABLES_RC=$?
     if [ -n "$IPTABLES_OUTPUT" ]; then
-        printf '%s\n' "$IPTABLES_OUTPUT" >&2
+        case "$IPTABLES_OUTPUT" in
+            *"No chain/target/match by that name"*|*"Chain already exists"*|*"Bad rule (does a matching rule exist in that chain?)"*|*"Couldn't find target"*)
+                ;;
+            *)
+                printf '%s\n' "$IPTABLES_OUTPUT" >&2
+                ;;
+        esac
         case "$IPTABLES_OUTPUT" in
             *"Invalid argument"*|*"Permission denied"*)
                 printf '[iptables rc=%s] %s :: %s\n' "$IPTABLES_RC" "$*" "$IPTABLES_OUTPUT" >> "$RULE_DIAG_FILE" 2>/dev/null
@@ -75,7 +123,13 @@ ip6tables() {
     IP6TABLES_OUTPUT=$("$IP6TABLES_BIN" -w 30 "$@" 2>&1 1>/dev/null)
     IP6TABLES_RC=$?
     if [ -n "$IP6TABLES_OUTPUT" ]; then
-        printf '%s\n' "$IP6TABLES_OUTPUT" >&2
+        case "$IP6TABLES_OUTPUT" in
+            *"No chain/target/match by that name"*|*"Chain already exists"*|*"Bad rule (does a matching rule exist in that chain?)"*|*"Couldn't find target"*)
+                ;;
+            *)
+                printf '%s\n' "$IP6TABLES_OUTPUT" >&2
+                ;;
+        esac
         case "$IP6TABLES_OUTPUT" in
             *"Invalid argument"*|*"Permission denied"*)
                 printf '[ip6tables rc=%s] %s :: %s\n' "$IP6TABLES_RC" "$*" "$IP6TABLES_OUTPUT" >> "$RULE_DIAG_FILE" 2>/dev/null
@@ -98,6 +152,7 @@ cleanup_rules() {
     # Remove every legacy redirect/filter hook, but preserve fail-closed guards.
     while iptables -t nat -D OUTPUT -j REDSOCKS 2>/dev/null; do :; done
     while iptables -t nat -D OUTPUT -p tcp -j REDSOCKS 2>/dev/null; do :; done
+    while iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT" 2>/dev/null; do :; done
     iptables -t nat -F REDSOCKS 2>/dev/null
     iptables -t nat -X REDSOCKS 2>/dev/null
 
@@ -147,6 +202,19 @@ setup_guard_chain() {
     "$TOOL" -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || :
     # Loopback interface
     "$TOOL" -A "$CHAIN" -o lo -j ACCEPT || return 1
+    # Immediately reject QUIC / HTTP3 UDP 443 so apps fall back to TCP HTTPS instantly
+    # Block WebRTC STUN/TURN (ports 3478, 5349, 19302, 19305) to eliminate WebRTC IP leaks
+    if [ "$TOOL" = "ip6tables" ]; then
+        "$TOOL" -A "$CHAIN" -p udp --dport 443 -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || :
+        for stun_p in 3478 5349 19302 19305; do
+            "$TOOL" -A "$CHAIN" -p udp --dport "$stun_p" -j REJECT --reject-with icmp6-port-unreachable 2>/dev/null || :
+        done
+    else
+        "$TOOL" -A "$CHAIN" -p udp --dport 443 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || :
+        for stun_p in 3478 5349 19302 19305; do
+            "$TOOL" -A "$CHAIN" -p udp --dport "$stun_p" -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || :
+        done
+    fi
     if [ "$TOOL" = "iptables" ]; then
         # CRITICAL: Allow local loopback destination (127.0.0.0/8). Packets redirected
         # by nat REDSOCKS to 127.0.0.1 (redsocks/tcpdns) keep original outdev (wlan0)
@@ -154,6 +222,8 @@ setup_guard_chain() {
         "$TOOL" -A "$CHAIN" -d 127.0.0.0/8 -j ACCEPT || return 1
         # DHCP is required before a Wi-Fi route exists; no app payload is allowed here.
         "$TOOL" -A "$CHAIN" -p udp --sport 68 --dport 67 -j ACCEPT || return 1
+        # Block direct DNS to LAN router (192.168.1.1:53) so it cannot bypass tcpdns
+        "$TOOL" -A "$CHAIN" -p udp --dport 53 -j REJECT --reject-with icmp-port-unreachable 2>/dev/null || :
         # Allow private LAN subnets and broadcast for gateway/router/ARP communication
         "$TOOL" -A "$CHAIN" -d 10.0.0.0/8 -j ACCEPT || return 1
         "$TOOL" -A "$CHAIN" -d 172.16.0.0/12 -j ACCEPT || return 1
@@ -214,7 +284,8 @@ udp_tproxy_is_active() {
 
 tcp_redirects_are_active() {
     iptables -t nat -C OUTPUT -j REDSOCKS >/dev/null 2>&1 && \
-    iptables -t nat -C REDSOCKS -p tcp -j REDIRECT --to-ports 1081 >/dev/null 2>&1
+    iptables -t nat -C REDSOCKS -p tcp -j REDIRECT --to-ports 1081 >/dev/null 2>&1 && \
+    iptables -t nat -C REDSOCKS -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT" >/dev/null 2>&1
 }
 
 redsocks_is_running() {
@@ -222,8 +293,8 @@ redsocks_is_running() {
     case "$REDSOCKS_PID" in
         ''|*[!0-9]*) return 1 ;;
     esac
-    [ -r "/proc/$REDSOCKS_PID/cmdline" ] || return 1
-    tr '\000' ' ' < "/proc/$REDSOCKS_PID/cmdline" | grep -q 'redsocks2' || return 1
+    [ -d "/proc/$REDSOCKS_PID" ] || return 1
+    grep -E -q 'redsocks2?' "/proc/$REDSOCKS_PID/comm" 2>/dev/null || return 1
     kill -0 "$REDSOCKS_PID" 2>/dev/null
 }
 
@@ -232,8 +303,7 @@ kill_redsocks() {
     case "$REDSOCKS_PID" in
         ''|*[!0-9]*) ;;
         *)
-            if [ -r "/proc/$REDSOCKS_PID/cmdline" ] && \
-               tr '\000' ' ' < "/proc/$REDSOCKS_PID/cmdline" | grep -q 'redsocks2'; then
+            if [ -d "/proc/$REDSOCKS_PID" ]; then
                 kill -9 "$REDSOCKS_PID" 2>/dev/null
             fi
             ;;
@@ -241,6 +311,7 @@ kill_redsocks() {
     killall -9 redsocks redsocks2 2>/dev/null
     pkill -9 redsocks 2>/dev/null
     pkill -9 redsocks2 2>/dev/null
+    sleep 0.2
 }
 
 setup_socks5_udp_tproxy() {
@@ -259,9 +330,14 @@ setup_socks5_udp_tproxy() {
     iptables -t mangle -A "$UDP_OUT_CHAIN" -d 172.16.0.0/12 -j RETURN || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -d 192.168.0.0/16 -j RETURN || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp -d "$PROXY_IP" -j RETURN || return 1
+    # Drop WebRTC STUN/TURN UDP packets in mangle to prevent IP leaks
+    for stun_p in 3478 5349 19302 19305; do
+        iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp --dport "$stun_p" -j DROP || return 1
+    done
+    # DNS queries (UDP 53) RETURN from mangle so they reach nat OUTPUT for REDIRECT to 1053
     iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp --dport 53 -j RETURN || return 1
-    # Reject UDP port 443 (QUIC/HTTP3) so Google services instantly fallback to TCP HTTPS
-    iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp --dport 443 -j RETURN || return 1
+    # Drop UDP port 443 (QUIC/HTTP3) so Google services instantly fallback to TCP HTTPS
+    iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp --dport 443 -j DROP || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -p udp -j MARK --set-xmark "$TPROXY_MARK/$TPROXY_MARK" || return 1
     while iptables -t mangle -D OUTPUT -p udp -j "$UDP_OUT_CHAIN" 2>/dev/null; do :; done
     iptables -t mangle -I OUTPUT 1 -p udp -j "$UDP_OUT_CHAIN" || return 1
@@ -286,8 +362,11 @@ setup_socks5_udp_tproxy() {
         for icmp6_type in 1 2 3 4 130 131 132 133 134 135 136 143; do
             ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p ipv6-icmp -m icmp6 --icmpv6-type "$icmp6_type" -j RETURN 2>/dev/null || :
         done
-        ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp --dport 53 -j RETURN 2>/dev/null || :
-        ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp --dport 443 -j RETURN 2>/dev/null || :
+        for stun_p in 3478 5349 19302 19305; do
+            ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp --dport "$stun_p" -j DROP 2>/dev/null || :
+        done
+        ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp --dport 53 -j DROP 2>/dev/null || :
+        ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp --dport 443 -j DROP 2>/dev/null || :
         ip6tables -t mangle -A "$UDP6_OUT_CHAIN" -p udp -j MARK --set-xmark "$TPROXY6_MARK/$TPROXY6_MARK" 2>/dev/null || :
         while ip6tables -t mangle -D OUTPUT -p udp -j "$UDP6_OUT_CHAIN" 2>/dev/null; do :; done
         ip6tables -t mangle -I OUTPUT 1 -p udp -j "$UDP6_OUT_CHAIN" 2>/dev/null || :
@@ -331,15 +410,13 @@ install_fail_closed_guard() {
             IPV6_FILTERED=1
         fi
     fi
-    if [ "$IPV6_FILTERED" != "1" ]; then
-        if [ -w /proc/sys/net/ipv6/conf/all/disable_ipv6 ] && [ -w /proc/sys/net/ipv6/conf/default/disable_ipv6 ]; then
-            echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 || return 1
-            echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6 || return 1
-            [ -w /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ] && echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 2>/dev/null || :
-        else
-            echo "[!] Cannot enforce fail-closed IPv6 policy."
-            return 1
-        fi
+    if [ -w /proc/sys/net/ipv6/conf/all/disable_ipv6 ]; then
+        echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || :
+        echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null || :
+        [ -w /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 ] && echo 1 > /proc/sys/net/ipv6/conf/wlan0/disable_ipv6 2>/dev/null || :
+    elif [ "$IPV6_FILTERED" != "1" ]; then
+        echo "[!] Cannot enforce fail-closed IPv6 policy."
+        return 1
     fi
 
     setup_guard_chain iptables "$LOCK4_CHAIN" "$GUARD_PROXY_IP" "$GUARD_PROXY_PORT" "$GUARD_PROXY_TYPE" || return 1
@@ -446,6 +523,8 @@ resolve_proxy_config() {
 
 case "$1" in
     auto)
+        acquire_lock
+        trap release_lock EXIT INT TERM
         resolve_proxy_config
         if [ "$P_EN" = "1" ] && [ -n "$P_HOST" ] && [ -n "$P_PORT" ]; then
             PASS_SIG=$(printf '%s' "$P_PASS" | cksum 2>/dev/null | cut -d' ' -f1)
@@ -455,70 +534,125 @@ case "$1" in
                tcp_redirects_are_active && \
                iptables -C OUTPUT -j "$LOCK4_CHAIN" >/dev/null 2>&1; then
                 kill_vpn_tun0
-                echo ACTIVE > "$STATUS_FILE"
-                chown 0:0 "$STATUS_FILE" 2>/dev/null
-                chmod 0600 "$STATUS_FILE" 2>/dev/null
+                set_status ACTIVE
+                start stealth_proxy 2>/dev/null || true
+                if ! pgrep -f "stealth_proxy.sh daemon" >/dev/null 2>&1; then
+                    nohup /system/bin/sh "$0" daemon >/dev/null 2>&1 &
+                fi
+                release_lock
+                trap - EXIT INT TERM
                 exit 0
             fi
             if ! install_fail_closed_guard "$P_HOST" "$P_PORT" "$P_TYPE"; then
                 echo "[!] Could not enforce the fail-closed firewall; refusing to change VPN state."
+                release_lock
+                trap - EXIT INT TERM
                 exit 1
             fi
             kill_vpn_tun0
+            release_lock
+            trap - EXIT INT TERM
             exec "$0" start "$P_HOST" "$P_PORT" "$P_USER" "$P_PASS" "$P_TYPE"
         else
             stop_proxy
-            echo STOPPED > "$STATUS_FILE"
-            chown 0:0 "$STATUS_FILE" 2>/dev/null
-            chmod 0600 "$STATUS_FILE" 2>/dev/null
+            set_status STOPPED
+            release_lock
+            trap - EXIT INT TERM
             exit 0
         fi
         ;;
 
     daemon)
-        echo $$ > /acct/cgroup.procs 2>/dev/null
+        echo $$ > /sys/fs/cgroup/cgroup.procs 2>/dev/null
         echo $$ > /dev/cpuset/cgroup.procs 2>/dev/null
+        echo -1000 > /proc/$$/oom_score_adj 2>/dev/null
+        renice -n -20 -p $$ 2>/dev/null
+        FAIL_COUNT=0
         while true; do
+            sleep 15
+            [ -d "$PROXY_MUTEX_DIR" ] && continue
             if pgrep -f "stealth_proxy.sh (start|auto|stop)" 2>/dev/null | grep -v "$$" >/dev/null 2>&1; then
-                sleep 5
                 continue
             fi
             resolve_proxy_config
             if [ "$P_EN" = "1" ]; then
-                if redsocks_is_running && tcp_redirects_are_active; then
-                    echo ACTIVE > "$STATUS_FILE"
-                    chown 0:0 "$STATUS_FILE" 2>/dev/null
-                    chmod 0600 "$STATUS_FILE" 2>/dev/null
-                    sleep 10
+                if redsocks_is_running; then
+                    FAIL_COUNT=0
+                    # Hot-check and re-inject iptables rules if netd cleared them, without killing redsocks
+                    if ! tcp_redirects_are_active; then
+                        while iptables -t nat -D OUTPUT -j REDSOCKS 2>/dev/null; do :; done
+                        iptables -t nat -I OUTPUT 1 -j REDSOCKS 2>/dev/null || :
+                        while iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT" 2>/dev/null; do :; done
+                        iptables -t nat -I PREROUTING 1 -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT" 2>/dev/null || :
+                    fi
+                    if ! iptables -C OUTPUT -j "$LOCK4_CHAIN" >/dev/null 2>&1; then
+                        while iptables -D OUTPUT -j "$LOCK4_CHAIN" 2>/dev/null; do :; done
+                        iptables -I OUTPUT 1 -j "$LOCK4_CHAIN" 2>/dev/null || :
+                    fi
+                    CUR_PID=$(cat "$PID_FILE" 2>/dev/null)
+                    if [ -n "$CUR_PID" ] && [ -d "/proc/$CUR_PID" ]; then
+                        [ "$(cat /proc/$CUR_PID/oom_score_adj 2>/dev/null)" != "-1000" ] && \
+                            echo -1000 > "/proc/$CUR_PID/oom_score_adj" 2>/dev/null
+                    fi
+
+                    # Active probe: verify upstream proxy server is actually responding
+                    if [ -n "$P_HOST" ] && [ -n "$P_PORT" ]; then
+                        if ! toybox nc -w 3 "$P_HOST" "$P_PORT" </dev/null >/dev/null 2>&1; then
+                            ENDPOINT_FAILS=$((ENDPOINT_FAILS + 1))
+                            if [ "$ENDPOINT_FAILS" -ge 3 ]; then
+                                echo "[ALERT] Upstream proxy $P_HOST:$P_PORT is UNREACHABLE / REFUSED!" >> "$CONF_DIR/stealth_proxy.log"
+                                set_status DEAD_ENDPOINT
+                            fi
+                        else
+                            ENDPOINT_FAILS=0
+                            set_status ACTIVE
+                        fi
+                    else
+                        set_status ACTIVE
+                    fi
                     continue
                 fi
-                "$0" auto > "$CONF_DIR/stealth_proxy.log" 2>&1
-                PROXY_RC=$?
-                if [ "$PROXY_RC" -eq 0 ]; then
-                    echo ACTIVE > "$STATUS_FILE"
-                elif grep -q '^\[LOCKED\]' "$CONF_DIR/stealth_proxy.log" 2>/dev/null; then
-                    echo BLOCKED > "$STATUS_FILE"
-                else
-                    echo ERROR > "$STATUS_FILE"
+
+                # Redsocks process is actually dead
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+                if [ "$FAIL_COUNT" -ge 2 ]; then
+                    FAIL_COUNT=0
+                    "$0" auto > "$CONF_DIR/stealth_proxy.log" 2>&1
+                    PROXY_RC=$?
+                    if [ "$PROXY_RC" -eq 0 ]; then
+                        set_status ACTIVE
+                    elif grep -q '^\[LOCKED\]' "$CONF_DIR/stealth_proxy.log" 2>/dev/null; then
+                        set_status BLOCKED
+                    else
+                        set_status ERROR
+                    fi
                 fi
             else
+                FAIL_COUNT=0
                 if redsocks_is_running || tcp_redirects_are_active; then
                     stop_proxy >/dev/null 2>&1
                 fi
-                echo STOPPED > "$STATUS_FILE"
+                set_status STOPPED
             fi
-            chown 0:0 "$STATUS_FILE" 2>/dev/null
-            chmod 0600 "$STATUS_FILE" 2>/dev/null
-            sleep 10
         done
         ;;
 
     start)
-        PROXY_IP="$2"
-        PROXY_PORT="$3"
-        PROXY_USER="$4"
-        PROXY_PASS="$5"
-        PROXY_TYPE="${6:-socks5}"
+        acquire_lock
+        trap release_lock EXIT INT TERM
+        if echo "$2" | grep -q ':'; then
+            PROXY_IP=$(echo "$2" | cut -d: -f1)
+            PROXY_PORT=$(echo "$2" | cut -d: -f2)
+            PROXY_USER="$3"
+            PROXY_PASS="$4"
+            PROXY_TYPE="${5:-socks5}"
+        else
+            PROXY_IP="$2"
+            PROXY_PORT="$3"
+            PROXY_USER="$4"
+            PROXY_PASS="$5"
+            PROXY_TYPE="${6:-socks5}"
+        fi
 
         if [ -z "$PROXY_IP" ] || [ -z "$PROXY_PORT" ]; then
             resolve_proxy_config
@@ -529,28 +663,63 @@ case "$1" in
                 PROXY_PASS="$P_PASS"
                 PROXY_TYPE="${P_TYPE:-socks5}"
             else
-                echo "Usage: $0 start <PROXY_IP> <PROXY_PORT> [USERNAME] [PASSWORD] socks5"
+                echo "Usage: $0 start <PROXY_IP> <PROXY_PORT> [USERNAME] [PASSWORD] [socks5|http]"
+                release_lock
+                trap - EXIT INT TERM
                 exit 1
             fi
         fi
 
+        case "$PROXY_TYPE" in
+            http|https|http-connect|http_connect)
+                NORMALIZED_PROXY_TYPE="http-connect"
+                REDSOCKS_TYPE="http-connect"
+                ;;
+            socks|socks5|socks5h|"")
+                NORMALIZED_PROXY_TYPE="socks5"
+                REDSOCKS_TYPE="socks5"
+                ;;
+            *)
+                NORMALIZED_PROXY_TYPE="socks5"
+                REDSOCKS_TYPE="socks5"
+                ;;
+        esac
+        PROXY_TYPE="$NORMALIZED_PROXY_TYPE"
+
         if ! printf '%s\n' "$PROXY_IP" | grep -Eq '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' || \
            ! printf '%s\n' "$PROXY_PORT" | grep -Eq '^[0-9]{1,5}$' || \
-           [ "$PROXY_PORT" -lt 1 ] || [ "$PROXY_PORT" -gt 65535 ] || \
-           [ "$PROXY_TYPE" != "socks5" ]; then
+           [ "$PROXY_PORT" -lt 1 ] || [ "$PROXY_PORT" -gt 65535 ]; then
             install_fail_closed_guard "" "" >/dev/null 2>&1
-            echo "[LOCKED] Invalid endpoint or non-SOCKS5 proxy; SOCKS5 is required for dual-stack TCP+UDP forwarding."
+            echo "[LOCKED] Invalid IP or port for proxy endpoint."
+            release_lock
+            trap - EXIT INT TERM
             exit 1
         fi
 
+        mkdir -p "$CONF_DIR" 2>/dev/null
+        cat <<EOF > "$CONF_DIR/ghost_proxy.conf"
+proxy.enabled=1
+proxy.action=start
+proxy.host=$PROXY_IP
+proxy.port=$PROXY_PORT
+proxy.user=$PROXY_USER
+proxy.pass=$PROXY_PASS
+proxy.type=$PROXY_TYPE
+EOF
+        chmod 0600 "$CONF_DIR/ghost_proxy.conf" 2>/dev/null
+
         if ! install_fail_closed_guard "$PROXY_IP" "$PROXY_PORT" "$PROXY_TYPE"; then
             echo "[!] Could not enforce the fail-closed firewall; refusing to start proxy."
+            release_lock
+            trap - EXIT INT TERM
             exit 1
         fi
         kill_vpn_tun0
-        settings put global captive_portal_mode 0 2>/dev/null
-        settings put global captive_portal_detection_enabled 0 2>/dev/null
-        settings put global private_dns_mode off 2>/dev/null
+        (
+            settings put global captive_portal_mode 0
+            settings put global captive_portal_detection_enabled 0
+            settings put global private_dns_mode off
+        ) >/dev/null 2>&1 &
         cleanup_rules
         kill_redsocks
         rm -f "$PID_FILE" "$CONF_FILE" "$STATE_FILE" 2>/dev/null
@@ -562,6 +731,10 @@ base {
     log = "stderr";
     daemon = off;
     redirector = iptables;
+    tcp_keepalive_time = 60;
+    tcp_keepalive_probes = 5;
+    tcp_keepalive_intvl = 10;
+    reuseport = off;
 }
 EOF
 
@@ -577,8 +750,10 @@ EOF
 redsocks {
     bind = "127.0.0.1:1081";
     relay = "$PROXY_IP:$PROXY_PORT";
-    type = socks5;
+    type = $REDSOCKS_TYPE;
     autoproxy = 0;
+    listenq = 1024;
+    timeout = 180;
 EOF
         if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
             printf '    login = "%s";\n' "$PROXY_USER_ESC" >> "$CONF_FILE"
@@ -586,38 +761,45 @@ EOF
         fi
         echo "}" >> "$CONF_FILE"
 
-        cat <<EOF >> "$CONF_FILE"
+        if [ "$REDSOCKS_TYPE" = "socks5" ]; then
+            cat <<EOF >> "$CONF_FILE"
 redudp {
     bind = "0.0.0.0:$REDUDP_PORT";
     relay = "$PROXY_IP:$PROXY_PORT";
     type = socks5;
 EOF
-        if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
-            printf '    login = "%s";\n' "$PROXY_USER_ESC" >> "$CONF_FILE"
-            printf '    password = "%s";\n' "$PROXY_PASS_ESC" >> "$CONF_FILE"
+            if [ -n "$PROXY_USER" ] && [ -n "$PROXY_PASS" ]; then
+                printf '    login = "%s";\n' "$PROXY_USER_ESC" >> "$CONF_FILE"
+                printf '    password = "%s";\n' "$PROXY_PASS_ESC" >> "$CONF_FILE"
+            fi
+            echo "}" >> "$CONF_FILE"
         fi
-        echo "}" >> "$CONF_FILE"
 
         cat <<EOF >> "$CONF_FILE"
 tcpdns {
     bind = "127.0.0.1:$TCPDNS4_PORT";
     tcpdns1 = "$TCPDNS_SERVER1";
     tcpdns2 = "$TCPDNS_SERVER2";
-    timeout = 5;
+    timeout = 15;
 }
 EOF
+
         chmod 0600 "$CONF_FILE"
         REDSOCKS_BIN="/system/bin/redsocks2"
         [ ! -x "$REDSOCKS_BIN" ] && REDSOCKS_BIN="/data/adb/redsocks2"
         if ! "$REDSOCKS_BIN" -t -c "$CONF_FILE" >/dev/null 2>&1; then
-            echo "[!] redsocks rejected its generated SOCKS5/UDP configuration."
+            echo "[!] redsocks rejected its generated configuration."
             stop_proxy >/dev/null 2>&1
+            release_lock
+            trap - EXIT INT TERM
             exit 1
         fi
         "$REDSOCKS_BIN" -c "$CONF_FILE" >/dev/null 2>&1 &
         REDSOCKS_PID=$!
-        echo "$REDSOCKS_PID" > /acct/cgroup.procs 2>/dev/null
+        echo "$REDSOCKS_PID" > /sys/fs/cgroup/cgroup.procs 2>/dev/null
         echo "$REDSOCKS_PID" > /dev/cpuset/cgroup.procs 2>/dev/null
+        echo -1000 > "/proc/$REDSOCKS_PID/oom_score_adj" 2>/dev/null
+        renice -n -20 -p "$REDSOCKS_PID" 2>/dev/null
         echo "$REDSOCKS_PID" > "$PID_FILE"
         chmod 0600 "$PID_FILE"
         sleep 1
@@ -626,31 +808,28 @@ EOF
         rm -f /data/local/tmp/ghost_* /data/local/tmp/redsocks* /data/local/tmp/stealth_proxy* 2>/dev/null
 
         if ! kill -0 "$REDSOCKS_PID" 2>/dev/null; then
-            echo "[!] Failed to start dual-stack SOCKS5 runtime $REDSOCKS_BIN"
+            echo "[!] Failed to start proxy runtime $REDSOCKS_BIN"
             stop_proxy >/dev/null 2>&1
+            release_lock
+            trap - EXIT INT TERM
             exit 1
         fi
 
-        if ! setup_socks5_udp_tproxy; then
-            echo "[WARN] UDP TPROXY setup failed; continuing with full TCP+DNS proxying."
+        if [ "$REDSOCKS_TYPE" = "socks5" ]; then
+            if ! setup_socks5_udp_tproxy; then
+                echo "[WARN] UDP TPROXY setup failed; continuing with full TCP proxying."
+            fi
         fi
 
-        # Redirect TCP through SOCKS. DNS UDP uses local tcpdns, which sends
-        # DNS/TCP through redsocks; other UDP remains on the SOCKS5 TPROXY path.
+        # Redirect TCP through SOCKS/HTTP proxy and DNS through tcpdns.
         iptables -t nat -N REDSOCKS 2>/dev/null || iptables -t nat -F REDSOCKS
         iptables -t nat -F REDSOCKS
+        # Intercept UDP DNS (port 53) and redirect to tcpdns BEFORE private IP bypass
+        iptables -t nat -A REDSOCKS -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT"
         iptables -t nat -A REDSOCKS -d 0.0.0.0/8 -j RETURN
         iptables -t nat -A REDSOCKS -d 127.0.0.0/8 -j RETURN
         iptables -t nat -A REDSOCKS -d "$PROXY_IP" -j RETURN
-        # Forward ALL DNS queries (UDP 53) to local tcpdns on 1053 first
-        iptables -t nat -A REDSOCKS -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT" || {
-            echo "[!] IPv4 DNS-to-TCP redirect failed; fail-closed guard remains active."
-            stop_proxy >/dev/null 2>&1
-            exit 1
-        }
-        # Forward DNS TCP 53 to redsocks on 1081
-        iptables -t nat -A REDSOCKS -p tcp --dport 53 -j REDIRECT --to-ports 1081
-        # Then exclude private subnets from being redirected
+        # Exclude private subnets from being redirected
         iptables -t nat -A REDSOCKS -d 10.0.0.0/8 -j RETURN
         iptables -t nat -A REDSOCKS -d 169.254.0.0/16 -j RETURN
         iptables -t nat -A REDSOCKS -d 172.16.0.0/12 -j RETURN
@@ -662,6 +841,8 @@ EOF
         iptables -t nat -C REDSOCKS -p tcp -j REDIRECT --to-ports 1081 || {
             echo "[!] TCP redirect failed; fail-closed output guard remains active."
             stop_proxy >/dev/null 2>&1
+            release_lock
+            trap - EXIT INT TERM
             exit 1
         }
 
@@ -674,27 +855,50 @@ EOF
         iptables -t nat -I OUTPUT 1 -j REDSOCKS || {
             echo "[!] NAT redirect setup failed; fail-closed output guard remains active."
             stop_proxy >/dev/null 2>&1
+            release_lock
+            trap - EXIT INT TERM
             exit 1
         }
+
+        while iptables -t nat -D PREROUTING -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT" 2>/dev/null; do :; done
+        iptables -t nat -I PREROUTING 1 -p udp --dport 53 -j REDIRECT --to-ports "$TCPDNS4_PORT" 2>/dev/null || :
 
         PASS_SIG=$(printf '%s' "$PROXY_PASS" | cksum 2>/dev/null | cut -d' ' -f1)
         echo "${PROXY_TYPE}://${PROXY_USER}@${PROXY_IP}:${PROXY_PORT}:${PASS_SIG}" > "$STATE_FILE"
         chmod 0600 "$STATE_FILE" 2>/dev/null
-        echo ACTIVE > "$STATUS_FILE"
-        chown 0:0 "$STATUS_FILE" 2>/dev/null
-        chmod 0600 "$STATUS_FILE" 2>/dev/null
+        set_status ACTIVE
         echo "[OK] Stealth Transparent Proxy ACTIVE ($PROXY_TYPE://$PROXY_IP:$PROXY_PORT)"
-        echo "     - TCP IPv4+IPv6: redirected to SOCKS5 through redsocks2"
-        echo "     - UDP IPv4+IPv6: SOCKS5 ASSOCIATE via TPROXY"
-        echo "     - Direct application egress: BLOCKED; DHCPv6/NDP/ICMPv6 control exempt"
+        echo "     - TCP IPv4+IPv6: redirected through redsocks2 ($REDSOCKS_TYPE)"
+        if [ "$REDSOCKS_TYPE" = "socks5" ]; then
+            echo "     - UDP IPv4+IPv6: SOCKS5 ASSOCIATE via TPROXY"
+        fi
+        echo "     - Direct application egress: BLOCKED; DNS/DHCP control exempt"
+        start stealth_proxy 2>/dev/null || true
+        if ! pgrep -f "stealth_proxy.sh daemon" >/dev/null 2>&1; then
+            nohup /system/bin/sh "$0" daemon >/dev/null 2>&1 &
+        fi
+        release_lock
+        trap - EXIT INT TERM
+        exit 0
         ;;
 
     stop)
+        acquire_lock
+        trap release_lock EXIT INT TERM
+        for cf in "$CONF_DIR/ghost_proxy.conf" /efs/ghost.conf /mnt/vendor/efs/ghost.conf /data/adb/s9_ghost.conf /data/local/tmp/ghost_proxy.conf; do
+            if [ -f "$cf" ]; then
+                sed -i 's/^proxy\.enabled=1/proxy.enabled=0/g' "$cf" 2>/dev/null
+                sed -i 's/^proxy\.action=start/proxy.action=stop/g' "$cf" 2>/dev/null
+            fi
+        done
+        stop stealth_proxy 2>/dev/null || true
+        pkill -f "stealth_proxy.sh daemon" 2>/dev/null || true
         stop_proxy
-        echo STOPPED > "$STATUS_FILE"
-        chown 0:0 "$STATUS_FILE" 2>/dev/null
-        chmod 0600 "$STATUS_FILE" 2>/dev/null
+        set_status STOPPED
         echo "[OK] Proxy stopped; normal direct network restored."
+        release_lock
+        trap - EXIT INT TERM
+        exit 0
         ;;
 
     status)
@@ -707,6 +911,7 @@ EOF
         else
             echo "[STATUS] Dual-stack SOCKS5 Proxy: INACTIVE or fail-closed"
         fi
+        exit 0
         ;;
 
     *)

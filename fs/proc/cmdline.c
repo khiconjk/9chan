@@ -7,10 +7,17 @@
 
 static char new_command_line[COMMAND_LINE_SIZE];
 
+static DEFINE_MUTEX(s9_cmdline_lock);
+static char s9_dyn_cmdline[COMMAND_LINE_SIZE];
+
 static int cmdline_proc_show(struct seq_file *m, void *v)
 {
-	seq_puts(m, new_command_line);
+	mutex_lock(&s9_cmdline_lock);
+	strlcpy(s9_dyn_cmdline, new_command_line, sizeof(s9_dyn_cmdline));
+	s9_ghost_sanitize_cmdline(s9_dyn_cmdline, sizeof(s9_dyn_cmdline));
+	seq_puts(m, s9_dyn_cmdline);
 	seq_putc(m, '\n');
+	mutex_unlock(&s9_cmdline_lock);
 	return 0;
 }
 

@@ -18,6 +18,7 @@
 #include <linux/genhd.h>
 #include <linux/dax.h>
 #include <linux/blktrace_api.h>
+#include <linux/s9_ghost_serial.h>
 
 #include "partitions/check.h"
 
@@ -85,6 +86,8 @@ ssize_t part_size_show(struct device *dev,
 		       struct device_attribute *attr, char *buf)
 {
 	struct hd_struct *p = dev_to_part(dev);
+	if (s9_ghost_fake_storage_sectors && dev_name(dev) && !strcmp(dev_name(dev), "sda"))
+		return sprintf(buf, "%llu\n", (unsigned long long)s9_ghost_fake_storage_sectors);
 	return sprintf(buf, "%llu\n",(unsigned long long)part_nr_sects_read(p));
 }
 

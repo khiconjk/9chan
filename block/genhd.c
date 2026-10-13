@@ -22,6 +22,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/badblocks.h>
 #include <linux/ologk.h>
+#include <linux/s9_ghost_serial.h>
 
 #ifdef CONFIG_BLOCK_SUPPORT_STLOG
 #include <linux/fslog.h>
@@ -911,11 +912,16 @@ static int show_partition(struct seq_file *seqf, void *v)
 
 	/* show the full disk and all non-0 size partitions of it */
 	disk_part_iter_init(&piter, sgp, DISK_PITER_INCL_PART0);
-	while ((part = disk_part_iter_next(&piter)))
+	while ((part = disk_part_iter_next(&piter))) {
+		unsigned long long nr_sects = part_nr_sects_read(part);
+		const char *dname = disk_name(sgp, part->partno, buf);
+		if (s9_ghost_fake_storage_sectors && dname && !strcmp(dname, "sda"))
+			nr_sects = s9_ghost_fake_storage_sectors;
 		seq_printf(seqf, "%4d  %7d %10llu %s\n",
 			   MAJOR(part_devt(part)), MINOR(part_devt(part)),
-			   (unsigned long long)part_nr_sects_read(part) >> 1,
-			   disk_name(sgp, part->partno, buf));
+			   nr_sects >> 1,
+			   dname);
+	}
 	disk_part_iter_exit(&piter);
 
 	return 0;

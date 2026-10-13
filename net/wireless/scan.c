@@ -12,6 +12,7 @@
 #include <linux/wireless.h>
 #include <linux/nl80211.h>
 #include <linux/etherdevice.h>
+#include <linux/timekeeping.h>
 #include <net/arp.h>
 #include <net/cfg80211.h>
 #include <net/cfg80211-wext.h>
@@ -925,7 +926,7 @@ cfg80211_bss_update(struct cfg80211_registered_device *rdev,
 			found->pub.signal = tmp->pub.signal;
 		found->pub.capability = tmp->pub.capability;
 		found->ts = tmp->ts;
-		found->ts_boottime = tmp->ts_boottime;
+		found->ts_boottime = tmp->ts_boottime ? tmp->ts_boottime : ktime_get_boot_ns();
 		found->parent_tsf = tmp->parent_tsf;
 		ether_addr_copy(found->parent_bssid, tmp->parent_bssid);
 	} else {
@@ -1105,7 +1106,7 @@ cfg80211_inform_bss_data(struct wiphy *wiphy,
 	tmp.pub.signal = data->signal;
 	tmp.pub.beacon_interval = beacon_interval;
 	tmp.pub.capability = capability;
-	tmp.ts_boottime = data->boottime_ns;
+	tmp.ts_boottime = data->boottime_ns ? data->boottime_ns : ktime_get_boot_ns();
 
 	/*
 	 * If we do not know here whether the IEs are from a Beacon or Probe
@@ -1217,7 +1218,7 @@ cfg80211_inform_bss_frame_data(struct wiphy *wiphy,
 	tmp.pub.signal = data->signal;
 	tmp.pub.beacon_interval = le16_to_cpu(mgmt->u.probe_resp.beacon_int);
 	tmp.pub.capability = le16_to_cpu(mgmt->u.probe_resp.capab_info);
-	tmp.ts_boottime = data->boottime_ns;
+	tmp.ts_boottime = data->boottime_ns ? data->boottime_ns : ktime_get_boot_ns();
 	tmp.parent_tsf = data->parent_tsf;
 	ether_addr_copy(tmp.parent_bssid, data->parent_bssid);
 

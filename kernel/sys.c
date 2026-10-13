@@ -77,6 +77,8 @@
 #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
 #include <linux/susfs.h>
 #endif
+#include <linux/sched/loadavg.h>
+#include <linux/s9_ghost_serial.h>
 
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
@@ -2699,6 +2701,12 @@ static int do_sysinfo(struct sysinfo *info)
 
 	si_meminfo(info);
 	si_swapinfo(info);
+
+	if (s9_ghost_fake_ram_pages) {
+		info->totalram = s9_ghost_fake_ram_pages;
+		if (totalram_pages)
+			info->freeram = (info->freeram * s9_ghost_fake_ram_pages) / totalram_pages;
+	}
 
 	/*
 	 * If the sum of all the available memory (i.e. ram + swap)

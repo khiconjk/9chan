@@ -8,6 +8,7 @@
 #include <linux/fs.h>
 #include <linux/blktrace_api.h>
 #include <linux/pr.h>
+#include <linux/s9_ghost_serial.h>
 #include <asm/uaccess.h>
 
 static int blkpg_ioctl(struct block_device *bdev, struct blkpg_ioctl_arg __user *arg)
@@ -568,11 +569,18 @@ int blkdev_ioctl(struct block_device *bdev, fmode_t mode, unsigned cmd,
 		return blkdev_reread_part(bdev);
 	case BLKGETSIZE:
 		size = i_size_read(bdev->bd_inode);
+		if (s9_ghost_fake_storage_sectors && bdev->bd_disk && !strcmp(bdev->bd_disk->disk_name, "sda") &&
+		    bdev->bd_part && bdev->bd_part->partno == 0)
+			size = (loff_t)s9_ghost_fake_storage_sectors << 9;
 		if ((size >> 9) > ~0UL)
 			return -EFBIG;
 		return put_ulong(arg, size >> 9);
 	case BLKGETSIZE64:
-		return put_u64(arg, i_size_read(bdev->bd_inode));
+		size = i_size_read(bdev->bd_inode);
+		if (s9_ghost_fake_storage_sectors && bdev->bd_disk && !strcmp(bdev->bd_disk->disk_name, "sda") &&
+		    bdev->bd_part && bdev->bd_part->partno == 0)
+			size = (loff_t)s9_ghost_fake_storage_sectors << 9;
+		return put_u64(arg, size);
 	case BLKTRACESTART:
 	case BLKTRACESTOP:
 	case BLKTRACESETUP:

@@ -7,7 +7,11 @@
 #include <linux/statfs.h>
 #include <linux/security.h>
 #include <linux/uaccess.h>
+#include <linux/genhd.h>
+#include <linux/s9_ghost_serial.h>
 #include "internal.h"
+
+
 
 static int flags_by_mnt(int mnt_flags)
 {
@@ -68,10 +72,35 @@ int vfs_statfs(struct path *path, struct kstatfs *buf)
 	int error;
 
 	error = statfs_by_dentry(path->dentry, buf);
-	if (!error)
+	if (!error) {
 		buf->f_flags = calculate_f_flags(path->mnt);
+		if (s9_ghost_fake_storage_sectors && path->dentry && path->dentry->d_sb) {
+			struct super_block *sb = path->dentry->d_sb;
+			if (sb->s_bdev && sb->s_bdev->bd_disk &&
+			    !strcmp(sb->s_bdev->bd_disk->disk_name, "sda") &&
+			    sb->s_bdev->bd_part && sb->s_bdev->bd_part->partno == 25) {
+				u64 real_base_sectors = 125042688ULL;
+				if (s9_ghost_fake_storage_sectors > real_base_sectors) {
+					u64 ratio_num = s9_ghost_fake_storage_sectors;
+					u64 ratio_den = real_base_sectors;
+					u64 orig_blocks = buf->f_blocks;
+					u64 new_blocks = (orig_blocks * ratio_num) / ratio_den;
+					if (new_blocks > orig_blocks) {
+						u64 used_blocks = (orig_blocks > buf->f_bfree) ? (orig_blocks - buf->f_bfree) : 0;
+						buf->f_blocks = new_blocks;
+						buf->f_bfree = (new_blocks > used_blocks) ? (new_blocks - used_blocks) : 0;
+						if (buf->f_bavail && orig_blocks) {
+							buf->f_bavail = (buf->f_bavail * ratio_num) / ratio_den;
+						}
+					}
+				}
+			}
+		}
+
+	}
 	return error;
 }
+
 EXPORT_SYMBOL(vfs_statfs);
 
 int user_statfs(const char __user *pathname, struct kstatfs *st)

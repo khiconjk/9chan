@@ -17,6 +17,7 @@
 #endif
 #include <asm/page.h>
 #include <asm/pgtable.h>
+#include <linux/s9_ghost_serial.h>
 #include "internal.h"
 
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
@@ -53,6 +54,13 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 
 	si_meminfo(&i);
 	si_swapinfo(&i);
+
+	if (s9_ghost_fake_ram_pages) {
+		i.totalram = s9_ghost_fake_ram_pages;
+		if (totalram_pages)
+			i.freeram = (i.freeram * s9_ghost_fake_ram_pages) / totalram_pages;
+	}
+
 	committed = percpu_counter_read_positive(&vm_committed_as);
 
 	cached = global_node_page_state(NR_FILE_PAGES) -
@@ -64,6 +72,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
 
 	available = si_mem_available();
+	if (s9_ghost_fake_ram_pages && totalram_pages)
+		available = (available * s9_ghost_fake_ram_pages) / totalram_pages;
 
 	show_val_kb(m, "MemTotal:       ", i.totalram);
 	show_val_kb(m, "MemFree:        ", i.freeram);
