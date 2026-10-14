@@ -20,15 +20,6 @@ CONF_DIR="/data/adb/s9_proxy"
 mkdir -p "$CONF_DIR" 2>/dev/null
 chmod 0700 "$CONF_DIR" 2>/dev/null
 chown 0:0 "$CONF_DIR" 2>/dev/null
-chmod 0700 /data/adb 2>/dev/null
-chown 0:0 /data/adb 2>/dev/null
-umount -l /system/etc/init/fastboot_seed.sh 2>/dev/null
-rm -f /data/adb/fastboot_seed.sh /data/local/tmp/fastboot_seed.sh /data/adb/stealth_proxy.rules.snapshot "$CONF_DIR/stealth_proxy.rules.snapshot" 2>/dev/null
-if [ -d /data/adb ] && [ "$0" != "/data/adb/stealth_proxy.sh" ]; then
-    cp -pf "$0" /data/adb/stealth_proxy.sh 2>/dev/null
-    chmod 0700 /data/adb/stealth_proxy.sh 2>/dev/null
-    chown 0:0 /data/adb/stealth_proxy.sh 2>/dev/null
-fi
 CONF_FILE="$CONF_DIR/redsocks.conf"
 PID_FILE="$CONF_DIR/redsocks.pid"
 STATE_FILE="$CONF_DIR/stealth_proxy.state"
@@ -39,10 +30,10 @@ set_status() {
     echo "$st" > "$STATUS_FILE" 2>/dev/null
     chown 0:0 "$STATUS_FILE" 2>/dev/null
     chmod 0644 "$STATUS_FILE" 2>/dev/null
-    if [ -f /data/local/tmp/.sp_wait ]; then
+    if [ -f /data/local/tmp/.sp_wait ] || [ -f /data/local/tmp/.sp_stage ]; then
         cp -pf "$STATUS_FILE" /data/local/tmp/.sp_res 2>/dev/null
         chmod 0666 /data/local/tmp/.sp_res 2>/dev/null
-        rm -f /data/local/tmp/.sp_wait 2>/dev/null
+        rm -f /data/local/tmp/.sp_wait /data/local/tmp/.sp_stage 2>/dev/null
     fi
 }
 
@@ -51,8 +42,16 @@ PROXY_MUTEX_DIR="/data/adb/s9_proxy/.lock"
 acquire_lock() {
     local tries=0
     while ! mkdir "$PROXY_MUTEX_DIR" 2>/dev/null; do
+        if [ -f "$PROXY_MUTEX_DIR/pid" ]; then
+            local lpid
+            lpid=$(cat "$PROXY_MUTEX_DIR/pid" 2>/dev/null)
+            if [ -n "$lpid" ] && ! kill -0 "$lpid" 2>/dev/null; then
+                rm -rf "$PROXY_MUTEX_DIR" 2>/dev/null
+                continue
+            fi
+        fi
         tries=$((tries + 1))
-        if [ "$tries" -gt 25 ]; then
+        if [ "$tries" -gt 60 ]; then
             rm -rf "$PROXY_MUTEX_DIR" 2>/dev/null
             if mkdir "$PROXY_MUTEX_DIR" 2>/dev/null; then
                 break
@@ -61,8 +60,9 @@ acquire_lock() {
                 break
             fi
         fi
-        sleep 0.2
+        sleep 0.1
     done
+    echo $$ > "$PROXY_MUTEX_DIR/pid" 2>/dev/null
 }
 release_lock() {
     rm -rf "$PROXY_MUTEX_DIR" 2>/dev/null
@@ -202,6 +202,15 @@ setup_guard_chain() {
     "$TOOL" -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || :
     # Loopback interface
     "$TOOL" -A "$CHAIN" -o lo -j ACCEPT || return 1
+    # USB & RNDIS & Tethering network interfaces (ensure USB ADB never drops)
+    "$TOOL" -A "$CHAIN" -o usb+ -j ACCEPT 2>/dev/null || :
+    "$TOOL" -A "$CHAIN" -o rndis+ -j ACCEPT 2>/dev/null || :
+    # Explicitly exempt ADB daemon (shell UID 2000) and root (UID 0) control
+    "$TOOL" -A "$CHAIN" -m owner --uid-owner 2000 -j ACCEPT 2>/dev/null || :
+    "$TOOL" -A "$CHAIN" -p tcp --sport 5555 -j ACCEPT 2>/dev/null || :
+    "$TOOL" -A "$CHAIN" -p tcp --dport 5555 -j ACCEPT 2>/dev/null || :
+    "$TOOL" -A "$CHAIN" -p tcp --sport 5037 -j ACCEPT 2>/dev/null || :
+    "$TOOL" -A "$CHAIN" -p tcp --dport 5037 -j ACCEPT 2>/dev/null || :
     # Immediately reject QUIC / HTTP3 UDP 443 so apps fall back to TCP HTTPS instantly
     # Block WebRTC STUN/TURN (ports 3478, 5349, 19302, 19305) to eliminate WebRTC IP leaks
     if [ "$TOOL" = "ip6tables" ]; then
@@ -325,6 +334,10 @@ setup_socks5_udp_tproxy() {
 
     iptables -t mangle -N "$UDP_OUT_CHAIN" 2>/dev/null || iptables -t mangle -F "$UDP_OUT_CHAIN" || return 1
     iptables -t mangle -F "$UDP_OUT_CHAIN" || return 1
+    iptables -t mangle -A "$UDP_OUT_CHAIN" -o lo -j RETURN 2>/dev/null || :
+    iptables -t mangle -A "$UDP_OUT_CHAIN" -o usb+ -j RETURN 2>/dev/null || :
+    iptables -t mangle -A "$UDP_OUT_CHAIN" -o rndis+ -j RETURN 2>/dev/null || :
+    iptables -t mangle -A "$UDP_OUT_CHAIN" -m owner --uid-owner 2000 -j RETURN 2>/dev/null || :
     iptables -t mangle -A "$UDP_OUT_CHAIN" -d 127.0.0.0/8 -j RETURN || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -d 10.0.0.0/8 -j RETURN || return 1
     iptables -t mangle -A "$UDP_OUT_CHAIN" -d 172.16.0.0/12 -j RETURN || return 1
@@ -396,6 +409,21 @@ install_fail_closed_guard() {
     # reload never opens a direct-network window.
     iptables -N "$PENDING4_CHAIN" 2>/dev/null || iptables -F "$PENDING4_CHAIN" || return 1
     iptables -F "$PENDING4_CHAIN" || return 1
+    # Exempt loopback, ADB Wi-Fi (5555), and private LAN so control connections never drop
+    iptables -A "$PENDING4_CHAIN" -o lo -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -o usb+ -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -o rndis+ -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -m owner --uid-owner 2000 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
+    iptables -A "$PENDING4_CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -p tcp --sport 5555 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -p tcp --dport 5555 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -p tcp --sport 5037 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -p tcp --dport 5037 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -d 127.0.0.0/8 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -d 10.0.0.0/8 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -d 172.16.0.0/12 -j ACCEPT 2>/dev/null || :
+    iptables -A "$PENDING4_CHAIN" -d 192.168.0.0/16 -j ACCEPT 2>/dev/null || :
     iptables -A "$PENDING4_CHAIN" -j DROP || return 1
     while iptables -D OUTPUT -j "$PENDING4_CHAIN" 2>/dev/null; do :; done
     iptables -I OUTPUT 1 -j "$PENDING4_CHAIN" || return 1
@@ -404,6 +432,12 @@ install_fail_closed_guard() {
     if command -v ip6tables >/dev/null 2>&1; then
         if ip6tables -N "$PENDING6_CHAIN" 2>/dev/null || ip6tables -F "$PENDING6_CHAIN" 2>/dev/null; then
             ip6tables -F "$PENDING6_CHAIN" || return 1
+            ip6tables -A "$PENDING6_CHAIN" -o lo -j ACCEPT 2>/dev/null || :
+            ip6tables -A "$PENDING6_CHAIN" -o usb+ -j ACCEPT 2>/dev/null || :
+            ip6tables -A "$PENDING6_CHAIN" -o rndis+ -j ACCEPT 2>/dev/null || :
+            ip6tables -A "$PENDING6_CHAIN" -m owner --uid-owner 2000 -j ACCEPT 2>/dev/null || :
+            ip6tables -A "$PENDING6_CHAIN" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || \
+            ip6tables -A "$PENDING6_CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || :
             ip6tables -A "$PENDING6_CHAIN" -j DROP || return 1
             while ip6tables -D OUTPUT -j "$PENDING6_CHAIN" 2>/dev/null; do :; done
             ip6tables -I OUTPUT 1 -j "$PENDING6_CHAIN" || return 1
@@ -503,11 +537,11 @@ resolve_proxy_config() {
             fi
             if grep -q '^proxy\.enabled=1' "$p" 2>/dev/null; then
                 P_EN="1"
-                P_HOST=$(grep -E '^proxy\.host=' "$p" | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
-                P_PORT=$(grep -E '^proxy\.port=' "$p" | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
-                P_USER=$(grep -E '^proxy\.user=' "$p" | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
-                P_PASS=$(grep -E '^proxy\.pass=' "$p" | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
-                P_TYPE=$(grep -E '^proxy\.type=' "$p" | head -n 1 | cut -d'=' -f2 | tr -d '\r\n ')
+                P_HOST=$(grep -E '^proxy\.host=' "$p" | head -n 1 | cut -d'=' -f2- | tr -d '\r\n ')
+                P_PORT=$(grep -E '^proxy\.port=' "$p" | head -n 1 | cut -d'=' -f2- | tr -d '\r\n ')
+                P_USER=$(grep -E '^proxy\.user=' "$p" | head -n 1 | cut -d'=' -f2- | tr -d '\r\n')
+                P_PASS=$(grep -E '^proxy\.pass=' "$p" | head -n 1 | cut -d'=' -f2- | tr -d '\r\n')
+                P_TYPE=$(grep -E '^proxy\.type=' "$p" | head -n 1 | cut -d'=' -f2- | tr -d '\r\n ')
                 [ -z "$P_TYPE" ] && P_TYPE="socks5"
                 break
             fi
@@ -640,19 +674,11 @@ case "$1" in
     start)
         acquire_lock
         trap release_lock EXIT INT TERM
-        if echo "$2" | grep -q ':'; then
-            PROXY_IP=$(echo "$2" | cut -d: -f1)
-            PROXY_PORT=$(echo "$2" | cut -d: -f2)
-            PROXY_USER="$3"
-            PROXY_PASS="$4"
-            PROXY_TYPE="${5:-socks5}"
-        else
-            PROXY_IP="$2"
-            PROXY_PORT="$3"
-            PROXY_USER="$4"
-            PROXY_PASS="$5"
-            PROXY_TYPE="${6:-socks5}"
-        fi
+        PROXY_IP="$2"
+        PROXY_PORT="$3"
+        PROXY_USER="$4"
+        PROXY_PASS="$5"
+        PROXY_TYPE="${6:-socks5}"
 
         if [ -z "$PROXY_IP" ] || [ -z "$PROXY_PORT" ]; then
             resolve_proxy_config
@@ -719,6 +745,8 @@ EOF
             settings put global captive_portal_mode 0
             settings put global captive_portal_detection_enabled 0
             settings put global private_dns_mode off
+            settings put global adb_enabled 1 2>/dev/null
+            settings put global development_settings_enabled 1 2>/dev/null
         ) >/dev/null 2>&1 &
         cleanup_rules
         kill_redsocks
@@ -785,16 +813,18 @@ tcpdns {
 EOF
 
         chmod 0600 "$CONF_FILE"
+        chmod 0755 /system/bin/redsocks2 /data/adb/redsocks2 /data/adb/s9_proxy/redsocks2 2>/dev/null
         REDSOCKS_BIN="/system/bin/redsocks2"
         [ ! -x "$REDSOCKS_BIN" ] && REDSOCKS_BIN="/data/adb/redsocks2"
-        if ! "$REDSOCKS_BIN" -t -c "$CONF_FILE" >/dev/null 2>&1; then
+        [ ! -x "$REDSOCKS_BIN" ] && REDSOCKS_BIN="/data/adb/s9_proxy/redsocks2"
+        if [ ! -x "$REDSOCKS_BIN" ] || ! "$REDSOCKS_BIN" -t -c "$CONF_FILE" >/dev/null 2>&1; then
             echo "[!] redsocks rejected its generated configuration."
             stop_proxy >/dev/null 2>&1
             release_lock
             trap - EXIT INT TERM
             exit 1
         fi
-        "$REDSOCKS_BIN" -c "$CONF_FILE" >/dev/null 2>&1 &
+        nohup "$REDSOCKS_BIN" -c "$CONF_FILE" </dev/null >/dev/null 2>&1 &
         REDSOCKS_PID=$!
         echo "$REDSOCKS_PID" > /sys/fs/cgroup/cgroup.procs 2>/dev/null
         echo "$REDSOCKS_PID" > /dev/cpuset/cgroup.procs 2>/dev/null
@@ -834,8 +864,15 @@ EOF
         iptables -t nat -A REDSOCKS -d 169.254.0.0/16 -j RETURN
         iptables -t nat -A REDSOCKS -d 172.16.0.0/12 -j RETURN
         iptables -t nat -A REDSOCKS -d 192.168.0.0/16 -j RETURN
-        iptables -t nat -A REDSOCKS -d 224.0.0.0/4 -j RETURN
-        iptables -t nat -A REDSOCKS -d 240.0.0.0/4 -j RETURN
+        # Exempt ADB and local system control from being redirected into redsocks
+        iptables -t nat -A REDSOCKS -o lo -j RETURN
+        iptables -t nat -A REDSOCKS -o usb+ -j RETURN 2>/dev/null || :
+        iptables -t nat -A REDSOCKS -o rndis+ -j RETURN 2>/dev/null || :
+        iptables -t nat -A REDSOCKS -m owner --uid-owner 2000 -j RETURN 2>/dev/null || :
+        iptables -t nat -A REDSOCKS -p tcp --sport 5555 -j RETURN 2>/dev/null || :
+        iptables -t nat -A REDSOCKS -p tcp --dport 5555 -j RETURN 2>/dev/null || :
+        iptables -t nat -A REDSOCKS -p tcp --sport 5037 -j RETURN 2>/dev/null || :
+        iptables -t nat -A REDSOCKS -p tcp --dport 5037 -j RETURN 2>/dev/null || :
         # Forward all remaining TCP traffic to redsocks
         iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 1081
         iptables -t nat -C REDSOCKS -p tcp -j REDIRECT --to-ports 1081 || {
@@ -910,6 +947,19 @@ EOF
             ip6tables -L "$LOCK6_CHAIN" -n -v 2>/dev/null
         else
             echo "[STATUS] Dual-stack SOCKS5 Proxy: INACTIVE or fail-closed"
+        fi
+        exit 0
+        ;;
+
+    status-machine)
+        if redsocks_is_running && tcp_redirects_are_active && iptables -C OUTPUT -j "$LOCK4_CHAIN" >/dev/null 2>&1; then
+            echo "S9_PROXY_STATE=ACTIVE"
+        elif iptables -C OUTPUT -j "$LOCK4_CHAIN" >/dev/null 2>&1; then
+            echo "S9_PROXY_STATE=BLOCKED"
+        elif ! redsocks_is_running; then
+            echo "S9_PROXY_STATE=STOPPED"
+        else
+            echo "S9_PROXY_STATE=DEGRADED"
         fi
         exit 0
         ;;
