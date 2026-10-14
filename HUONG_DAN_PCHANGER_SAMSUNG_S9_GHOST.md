@@ -1270,3 +1270,77 @@ Qua phân tích thực nghiệm và dịch ngược mã nguồn Pchanger (`Recov
    - Chuyển toàn bộ các lệnh thực thi trong `onDeviceBooted`, `applyDeviceLocationLive` và `disableCustomPackages` sang dùng `executeShellWithCliFallback`.
 5. **Đóng gói hoàn tất:**
    - Biên dịch và cập nhật toàn bộ vào `Pchanger-4.4.jar` và `Pchanger-4.4-ADB-ON-PROXY.jar`.
+
+---
+
+## 34. BẢN VÁ TRIỆT ĐỂ: KHẮC PHỤC LỖI SẬP KẾT NỐI ADB TRÊN PRODUCTION BUILD (USER BUILD) & BỘ ĐỆM GHOST TRANSPORT (14/10/2026)
+
+### 34.1. Phân tích nguyên nhân gốc rễ (Root Cause Analysis)
+1. **Lệnh `adb root` gây ngắt kết nối USB / adbd trên Android User Build:**
+   - Trên các bản ROM production của Samsung (`ro.build.type=user`, `ro.debuggable=0`), daemon `adbd` được bảo vệ nghiêm ngặt bởi SELinux.
+   - Khi công cụ cố gắng thực thi lệnh `adb root`, daemon `adbd` trên thiết bị lập tức bị tắt để cố khởi động lại dưới quyền root nhưng bị kernel/init từ chối vì `ro.debuggable=0`.
+   - Kết quả: Bộ điều khiển USB Gadget trên điện thoại bị reset, thiết bị ngắt kết nối đột ngột (`device offline` hoặc `device not found`).
+2. **Thời gian chờ (Timeout) suCheck quá ngắn dưới tải CPU cao:**
+   - Khi Pchanger thực hiện Bước 1 (dọn sạch dữ liệu ứng dụng, quét 42 gói package và các thư mục WAL), CPU thiết bị phải xử lý đồng thời hàng loạt tác vụ nặng.
+   - Thời gian timeout kiểm tra quyền `su` trước đây chỉ là 3.000ms. Khi CPU bận rộn, lệnh `su` phản hồi sau 3.500ms $\rightarrow$ Pchanger lầm tưởng máy chưa có `su` và tự động nhảy vào nhánh gọi `adb root`, gây ngắt kết nối cáp USB ngay giữa chu trình Change.
+
+### 34.2. Giải pháp kỹ thuật đã triển khai
+1. **Xây dựng lớp chuyên dụng `AdbTransport.java`:**
+   - Đóng gói toàn bộ logic giao tiếp ADB thông qua subprocess an toàn với cơ chế timeout linh hoạt.
+   - Định danh chính xác serial (`-s <serial>`), không bao giờ bị nhầm lẫn giữa các thiết bị.
+2. **Bộ nhớ đệm thông minh `suAvailableSerials`:**
+   - Bổ sung bộ nhớ đệm `suAvailableSerials = Collections.synchronizedSet(new HashSet<>())`.
+   - Một khi thiết bị đã được xác thực quyền `su` thành công (qua `/data/local/tmp/su`), cờ được lưu giữ vĩnh viễn suốt phiên làm việc. Mọi tác vụ nâng quyền sau đó tự động dùng `su -c` và **bỏ qua 100% lệnh `adb root`**.
+3. **Chốt chặn an toàn `rootUnsupportedSerials` trên User Build:**
+   - Tự động kiểm tra `ro.build.type`: Nếu là `user`, thiết bị được đưa vào danh sách `rootUnsupportedSerials`, cấm tuyệt đối mọi lệnh `adb root`.
+4. **Nâng timeout `suCheck` lên 8.000ms:**
+   - Đảm bảo các tiến trình chạy ngầm ngay cả khi CPU đang tải cao 100% vẫn xác nhận quyền root chính xác.
+5. **Cơ chế tự phục hồi `su` wrapper qua `00_ghost_sync.sh`:**
+   - Script `/data/adb/post-fs-data.d/00_ghost_sync.sh` tự động sao chép `/data/adb/su_wrapper.sh` sang `/data/local/tmp/su` (chmod 755) trong giai đoạn khởi động sớm, đảm bảo shell ADB luôn có quyền root UID 0 ngay cả sau khi factory reset/wipe data.
+6. **Bảo vệ chống `NullPointerException` trong `com.package.S`:**
+   - Tự động chặn các yêu cầu gọi `/change` khi chưa có profile hợp lệ, trả về mã HTTP 409 thay vì làm crash luồng HTTP server.
+
+---
+
+## 35. BẢN VÁ TRIỆT ĐỂ: KHẮC PHỤC LỖI CRASH ZYGISK / ZYGOTE VÀ KHÔI PHỤC MODULE HMA-OSS ZYGISK (`hma_oss_zygisk`) (14/10/2026)
+
+### 35.1. Phân tích nguyên nhân gốc rễ (Root Cause Analysis)
+1. **Lệnh `abort()` nghiêm ngặt trong `vova7878/ZygoteLoader` (`arm64-v8a.so`):**
+   - Module HMA-OSS Zygisk v-oss-173 chứa thư viện native `/data/adb/modules/hma_oss_zygisk/zygisk/arm64-v8a.so`.
+   - Trong quá trình Zygisk Next inject vào Zygote và `system_server`, hàm `api->getModuleDir()` đôi khi trả về `-1` (do cơ chế namespace sandbox của Zygisk Next).
+   - Mã nguồn ZygoteLoader chứa các lệnh kiểm tra xác thực cứng `assert(fd != -1)`. Khi nhận `-1`, thư viện gọi trực tiếp `abort()`, làm chết ngay lập tức Zygote và `system_server`, kích hoạt reboot liên tục hoặc làm Zygisk đưa module vào danh sách lỗi (`modules_with_issue: 1`).
+2. **Quy tắc SELinux chặn truy cập thư mục module:**
+   - Trên Android 13, tiến trình `system_server` và `appdomain` bị SELinux chặn đọc thư mục `/data/adb/modules/hma_oss_zygisk` (`adb_data_file`), dẫn tới việc binder service không thể tải cấu hình dex.
+
+### 35.2. Giải pháp nhị phân & Cấu hình bảo mật đã triển khai
+1. **Vá nhị phân ARM64 Assembly (`arm64-v8a.so`) bằng Python (`patch_hma_oss_zygisk.py`):**
+   - **Thêm chuỗi đường dẫn dự phòng:** Chèn chuỗi `/data/adb/modules/hma_oss_zygisk\0` vào vùng đệm tại offset `0x0f28`.
+   - **Tại `preServerSpecialize` (offset `0x1c64`):** Nếu `getModuleDir() == -1`, tự động chuyển hướng gọi fallback `openat(AT_FDCWD, "/data/adb/modules/hma_oss_zygisk", O_RDONLY | O_DIRECTORY | O_CLOEXEC)`. Nếu mở thành công, tiếp tục nạp dex an toàn; nếu thất bại, thoát êm qua function epilogue (`0x1c58`) mà **tuyệt đối không gọi `abort()`**.
+   - **Tại `preAppSpecialize` (offset `0x19a4`):** Áp dụng cơ chế fallback tương tự, thoát êm về `0x196c` nếu không mở được thư mục.
+   - **Vô hiệu hóa toàn bộ các điểm gọi `abort()`:** Thay thế các lệnh nhảy tới `abort()` trong `load_dex` và `mmap_dex` bằng lệnh return an toàn (NOP).
+2. **Cấp quyền SELinux toàn diện qua `00_ghost_sync.sh`:**
+   - Đặt nhãn SELinux `system_file:s0` cho toàn bộ thư mục module:
+     ```bash
+     chmod 755 /data/adb
+     chcon -R u:object_r:system_file:s0 /data/adb/modules/hma_oss_zygisk
+     ```
+   - Nạp động các quy tắc SELinux qua `ksud sepolicy patch`:
+     ```bash
+     /data/adb/ksud sepolicy patch 'allow system_server adb_data_file dir *'
+     /data/adb/ksud sepolicy patch 'allow system_server adb_data_file file *'
+     /data/adb/ksud sepolicy patch 'allow zygote adb_data_file dir *'
+     /data/adb/ksud sepolicy patch 'allow zygote adb_data_file file *'
+     /data/adb/ksud sepolicy patch 'allow appdomain adb_data_file dir *'
+     /data/adb/ksud sepolicy patch 'allow appdomain adb_data_file file *'
+     ```
+3. **Kết quả kiểm chứng trên thiết bị thực:**
+   - Lệnh `zygiskd status` xác nhận:
+     ```text
+     inject_state: 1
+     modules64: 1, hma_oss_zygisk
+     modules32: 1, hma_oss_zygisk
+     modules_with_issue: 0 (Hoàn hảo)
+     ```
+   - `module.prop` cập nhật trạng thái: `description=[✅ System service loaded] A Zygisk backend for HMA-OSS`.
+   - Giao diện HMA-OSS trên điện thoại hiển thị: *Mô-đun đã Kích hoạt [oss-173]*, *Dịch vụ hệ thống đang chạy [105]*, đã lọc >1.100 yêu cầu theo thời gian thực mà không gây bất kỳ xung đột nào.
+
